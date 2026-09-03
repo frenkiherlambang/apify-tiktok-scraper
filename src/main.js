@@ -13,6 +13,7 @@ import { normalizeCookies, validateCookies, getCookieHash, getTargetIdc } from '
 import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
+import { normalizeVideoItem } from './normalize/shared.js';
 
 // Local development fallback for logging
 const logger = {
@@ -222,7 +223,7 @@ async function scrapeQuery(page, context, query, config) {
   const url = buildUrl(config.mode, query, config.sortBy, config.publishedWithin);
   log.info(`Navigating to: ${url}`);
 
-  // Setup interceptors BEFORE navigation
+  // Setup interceptor BEFORE navigation - captures initial search API response
   setupInterceptors(page, {
     endpoints: [
       '/api/search/general/full/',
@@ -234,45 +235,32 @@ async function scrapeQuery(page, context, query, config) {
     dedupSet,
     onItem: (item) => {
       results.push(item);
-      log.info(`  Captured: ${item.post_id} - "${(item.text || '').substring(0, 50)}..."`);
     },
     onError: (error) => {
       log.warning(`Interceptor error: ${error.message}`);
     },
   });
 
-  // Navigate directly to search URL
+  // Navigate to search page - TikTok's JS fires the initial API call
   await page.goto(url, {
     waitUntil: 'networkidle',
     timeout: 60000,
   });
 
-  // Wait for search results to load
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(3000);
+  log.info(`Results after initial load: ${results.length}`);
 
-  log.info(`Results after first load: ${results.length}`);
-
-  // Debug: Check page state
-  const pageTitle = await page.title();
-  const pageUrl = page.url();
-  log.info(`Page loaded: "${pageTitle}" at ${pageUrl}`);
-
-  // Check for captcha
-  const captcha = await detectCaptcha(page);
-  if (captcha) {
-    throw new CaptchaError(10000, 'Captcha detected on page load');
-  }
-
-  // Setup pagination (scroll-based) to load more results
-  const paginationResult = await setupPagination(page, {
+  // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
+  // and the interceptor captures each new API response
+  await setupPagination(page, {
     targetCount: config.maxItems,
-    stallLimit: DEFAULT_STALL_LIMIT,
-    scrollDelay: DEFAULT_SCROLL_DELAY,
+    stallLimit: 3,
+    scrollDelay: 2500,
     onScroll: (info) => {
-      log.info(`Scroll ${info.scrollCount}: ${info.currentCount} items (${info.itemsGained} new)`);
+      log.info(`Scroll ${info.scrollCount}: captured=${results.length}, DOM=${info.currentCount} (${info.itemsGained} new)`);
     },
     onComplete: (result) => {
-      log.info(`Pagination complete: ${result.reason}, ${result.totalItems} items`);
+      log.info(`Pagination complete: ${result.reason}, captured=${results.length} items`);
     },
   });
 
@@ -296,7 +284,7 @@ async function scrapeQuery(page, context, query, config) {
   return {
     query,
     items: results,
-    pagination: paginationResult,
+    pagination: { totalItems: results.length, reason: 'scroll_complete' },
   };
 }
 

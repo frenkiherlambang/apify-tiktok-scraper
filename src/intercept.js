@@ -121,7 +121,7 @@ function normalizeResponse(data, endpoint, seenIds) {
   switch (endpoint) {
     case ENDPOINTS.SEARCH_GENERAL:
       return normalizeSearchGeneral(data, seenIds);
-    case ENDPOINTs.SEARCH_ITEM:
+    case ENDPOINTS.SEARCH_ITEM:
       return normalizeSearchItem(data, seenIds);
     case ENDPOINTS.CHALLENGE_ITEM:
       return normalizeChallengeItem(data, seenIds);

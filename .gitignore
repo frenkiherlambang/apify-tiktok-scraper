@@ -5,3 +5,7 @@ storage/
 .env
 .env.local
 .DS_Store
+input.json
+debug_*.png
+debug_*.js
+sample-output.json

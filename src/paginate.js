@@ -77,14 +77,31 @@ export async function setupPagination(page, options = {}) {
 
 /**
  * Scroll down on the page to trigger infinite scroll
+ *
+ * Scrolls in small steps (so TikTok's lazy loader sees gradual progress),
+ * then jumps to the bottom. Also scrolls the inner results container if
+ * the window itself is not the scrollable element.
  */
 async function scrollDown(page) {
   await page.evaluate(() => {
-    window.scrollBy({
-      top: window.innerHeight * 1.5,
-      behavior: 'smooth',
-    });
+    const step = window.innerHeight * 0.8;
+    // Gradual steps
+    for (let y = window.scrollY; y < document.documentElement.scrollHeight; y += step) {
+      window.scrollTo(0, y);
+    }
+    // Final jump to bottom
+    window.scrollTo(0, document.documentElement.scrollHeight);
+
+    // Also scroll inner containers (TikTok sometimes scrolls a div, not window)
+    const containers = document.querySelectorAll(
+      '[class*="DivSearchResultContainer"], [class*="search-result"], main, [class*="DivBrowseContainer"]'
+    );
+    for (const el of containers) {
+      el.scrollTop = el.scrollHeight;
+    }
   });
+  // Let smooth-scroll / lazy-load settle
+  await page.keyboard.press('End').catch(() => {});
 }
 
 /**
