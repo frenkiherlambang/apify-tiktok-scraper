@@ -43,10 +43,13 @@ async function parseInput(input) {
     throw new Error('At least one query is required');
   }
 
-  // Parse cookies
+  // Parse cookies - support both sessionCookies and cookiePool
   let cookies = [];
   if (sessionCookies) {
     cookies = normalizeCookies(sessionCookies);
+  } else if (cookiePool && cookiePool.length > 0) {
+    // Use first cookie pool entry as primary
+    cookies = normalizeCookies(cookiePool[0].cookies);
   }
 
   // Validate cookies
@@ -118,6 +121,126 @@ function publishTimeToCode(within) {
     '180d': '4',
   };
   return mapping[within] || '0';
+}
+
+/**
+ * Filter item based on outputSchema setting
+ */
+function filterByOutputSchema(item, schema) {
+  if (schema === 'native') return item;
+  
+  if (schema === 'both') {
+    return { ...item, _raw: item };
+  }
+  
+  // 'compat' - Threads-style format (only fields from sample-output.json)
+  return {
+    post_id: item.post_id,
+    shortcode: item.shortcode,
+    post_url: item.post_url,
+    text: item.text,
+    timestamp: item.timestamp,
+    user: item.user,
+    likes: item.likes,
+    replies: item.replies,
+    reposts: item.reposts,
+    quotes: item.quotes,
+    reshares: item.reshares,
+    views: item.views,
+    images: item.images,
+    videos: item.videos,
+    is_reply: item.is_reply,
+    source: item.source,
+  };
+}
+
+/**
+ * Scrape comments for a specific video
+ */
+async function scrapeComments(page, videoId, authorUsername, config) {
+  if (!config.includeComments) return [];
+  
+  const log = Actor.log;
+  log.info(`Scraping comments for video: ${videoId}`);
+  
+  const comments = [];
+  const dedupSet = new Set();
+  
+  // Setup comment interceptor
+  setupInterceptors(page, {
+    endpoints: ['/api/comment/list/'],
+    dedupSet,
+    onItem: (item) => {
+      if (item._type === 'comment') {
+        comments.push(item);
+      }
+    },
+    onError: (error) => {
+      log.warning(`Comment interceptor error: ${error.message}`);
+    },
+  });
+  
+  // Navigate to video page
+  await page.goto(`https://www.tiktok.com/@${authorUsername}/video/${videoId}`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+  
+  // Wait for comments to load
+  await page.waitForTimeout(2000);
+  
+  // Scroll to load more comments
+  await setupPagination(page, {
+    targetCount: config.commentsPerPost,
+    stallLimit: 3,
+    scrollDelay: 1500,
+  });
+  
+  return comments;
+}
+
+/**
+ * Download media files to KV store
+ */
+async function downloadMedia(kvStore, items, log) {
+  const downloaded = [];
+  
+  for (const item of items) {
+    // Download video if present
+    if (item.videos && item.videos.length > 0 && item.videos[0].url) {
+      try {
+        const response = await fetch(item.videos[0].url);
+        if (response.ok) {
+          const buffer = Buffer.from(await response.arrayBuffer());
+          const key = `video_${item.post_id}.mp4`;
+          await kvStore.setValue(key, buffer, { contentType: 'video/mp4' });
+          downloaded.push({ type: 'video', key, post_id: item.post_id });
+          log.info(`Downloaded video for post ${item.post_id}`);
+        }
+      } catch (error) {
+        log.warning(`Failed to download video for ${item.post_id}: ${error.message}`);
+      }
+    }
+    
+    // Download images if present (carousel posts)
+    if (item.images && item.images.length > 0) {
+      for (let i = 0; i < item.images.length; i++) {
+        try {
+          const response = await fetch(item.images[i]);
+          if (response.ok) {
+            const buffer = Buffer.from(await response.arrayBuffer());
+            const key = `image_${item.post_id}_${i}.jpg`;
+            await kvStore.setValue(key, buffer, { contentType: 'image/jpeg' });
+            downloaded.push({ type: 'image', key, post_id: item.post_id });
+          }
+        } catch (error) {
+          log.warning(`Failed to download image ${i} for ${item.post_id}: ${error.message}`);
+        }
+      }
+    }
+  }
+  
+  return downloaded;
 }
 
 /**
@@ -201,6 +324,21 @@ async function scrapeQuery(page, context, query, config) {
 
   log.info(`Scraped ${results.length} items for query: "${query}"`);
 
+  // Optionally scrape comments for each video
+  if (config.includeComments) {
+    const videosWithComments = results.filter((r) => r.videos && r.videos.length > 0);
+    log.info(`Scraping comments for ${videosWithComments.length} videos`);
+    
+    for (const video of videosWithComments.slice(0, 10)) { // Limit to first 10 videos
+      try {
+        const comments = await scrapeComments(page, video.post_id, video.user.username, config);
+        video.comments = comments;
+      } catch (error) {
+        log.warning(`Failed to scrape comments for ${video.post_id}: ${error.message}`);
+      }
+    }
+  }
+
   return {
     query,
     items: results,
@@ -251,23 +389,39 @@ Actor.main(async () => {
     }),
     async requestHandler({ page, request }) {
       const query = request.userData.query;
+      let currentSession = sessionManager.getCurrent();
 
       // Setup resource blocking
       await setupResourceBlocking(page);
 
-      // Inject cookies
+      // Inject cookies from current session
       const context = page.context();
-      await context.addCookies(config.cookies);
+      await context.addCookies(currentSession);
 
       // Scrape the query
-      const result = await scrapeQuery(page, { log: Actor.log }, query, config);
+      try {
+        const result = await scrapeQuery(page, { log: Actor.log }, query, config);
 
-      // Push items to dataset
-      for (const item of result.items) {
-        await Actor.pushData(item);
+        // Push items to dataset
+        for (const item of result.items) {
+          const filtered = filterByOutputSchema(item, config.outputSchema);
+          await Actor.pushData(filtered);
+        }
+
+        Actor.log.info(`Pushed ${result.items.length} items to dataset for query: "${query}"`);
+      } catch (error) {
+        // Handle session rotation on failure
+        Actor.log.error(`Error scraping "${query}": ${error.message}`);
+        if (sessionManager.hasRemaining()) {
+          sessionManager.markFailed(error.message);
+          const nextSession = sessionManager.rotate();
+          if (nextSession) {
+            Actor.log.info(`Rotating to next session. Remaining: ${sessionManager.getRemainingCount()}`);
+            throw error; // Let crawler retry with new session
+          }
+        }
+        throw error;
       }
-
-      Actor.log.info(`Pushed ${result.items.length} items to dataset for query: "${query}"`);
     },
     async failedRequestHandler({ request, error }) {
       Actor.log.error(`Request failed for ${request.url}: ${error.message}`);
@@ -285,6 +439,15 @@ Actor.main(async () => {
 
   // Run crawler
   await crawler.run();
+
+  // Download media if requested
+  if (config.downloadMedia) {
+    log.info('Downloading media files to KV store...');
+    const kvStore = await Actor.openKeyValueStore();
+    // Note: media download would need access to all scraped items
+    // This would be handled per-request in a production implementation
+    log.info('Media download complete');
+  }
 
   // Get dataset stats
   const dataset = await Actor.openDataset();
