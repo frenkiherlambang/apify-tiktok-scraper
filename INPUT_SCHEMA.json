@@ -44,12 +44,15 @@
       "type": "array",
       "items": {
         "type": "object",
+        "title": "Cookie Set",
         "properties": {
           "label": {
+            "title": "Label",
             "type": "string",
             "description": "Label for this cookie set (e.g., 'acct1')"
           },
           "cookies": {
+            "title": "Cookies",
             "type": "string",
             "description": "Session cookies for this account"
           }
