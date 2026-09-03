@@ -440,6 +440,17 @@ Actor.main(async () => {
   // Run crawler
   await crawler.run();
 
+  // Persist refreshed cookies back to KV store
+  // msToken rotates constantly and a stale one degrades results
+  try {
+    const kvStore = await Actor.openKeyValueStore();
+    const refreshedCookies = sessionManager.getCurrent();
+    await kvStore.setValue('session_cookies_latest', refreshedCookies);
+    log.info('Persisted refreshed cookies to KV store');
+  } catch (error) {
+    log.warning(`Failed to persist cookies: ${error.message}`);
+  }
+
   // Download media if requested
   if (config.downloadMedia) {
     log.info('Downloading media files to KV store...');
