@@ -92,8 +92,12 @@ async function scrollDown(page) {
  */
 async function getItemCount(page) {
   return page.evaluate(() => {
-    // TikTok search results container
-    const items = document.querySelectorAll('[data-e2e="search_top-item"], [data-e2e="search_video-item"], .DivItemContainer');
+    // Count video links on page - this is the most reliable indicator
+    const videoLinks = document.querySelectorAll('a[href*="/video/"]');
+    if (videoLinks.length > 0) return videoLinks.length;
+    
+    // Fallback to container selectors
+    const items = document.querySelectorAll('[data-e2e="search_top-item"], [data-e2e="search_video-item"], .DivItemContainer, [class*="ItemContainer"], [class*="video-result"]');
     return items.length;
   });
 }

@@ -281,6 +281,7 @@ async function scrapeQuery(page, context, query, config) {
   log.info(`Navigating to: ${url}`);
 
   // Setup interceptors
+  const interceptedResponses = [];
   setupInterceptors(page, {
     endpoints: [
       '/api/search/general/full/',
@@ -298,14 +299,36 @@ async function scrapeQuery(page, context, query, config) {
     },
   });
 
-  // Navigate to the search page
+  // Navigate directly to search URL
   await page.goto(url, {
     waitUntil: 'networkidle',
     timeout: 30000,
   });
 
-  // Wait for initial content - TikTok search is JS-rendered
+  // Wait for search results - TikTok is JS-rendered
   await page.waitForTimeout(5000);
+
+  log.info(`Results after first load: ${results.length}`);
+  
+  // Debug: Check what the search API actually returns
+  const searchApiResponse = await page.evaluate(async () => {
+    try {
+      const response = await fetch('/api/search/general/full/?keyword=test&offset=0&count=10');
+      const data = await response.json();
+      return { status_code: data.status_code, dataLength: data.data?.length || 0 };
+    } catch (e) {
+      return { error: e.message };
+    }
+  });
+  log.info(`Direct API check: ${JSON.stringify(searchApiResponse)}`);
+
+  // Handle "Before you continue" verification page
+  const verifyButton = await page.$('button[data-e2e="verify-button"], button:has-text("Verify"), input[type="submit"]');
+  if (verifyButton) {
+    log.info('Verification page detected, attempting to click through...');
+    await verifyButton.click();
+    await page.waitForTimeout(5000);
+  }
 
   // Debug: Check page state
   const pageTitle = await page.title();
@@ -313,8 +336,25 @@ async function scrapeQuery(page, context, query, config) {
   log.info(`Page loaded: "${pageTitle}" at ${pageUrl}`);
   
   // Debug: Check if search results container exists
-  const resultsContainer = await page.$('[data-e2e="search-top-item"], [data-e2e="search-video-item"], .DivItemContainer, #search-content');
+  const resultsContainer = await page.$('[data-e2e="search_top-item"], [data-e2e="search_video-item"], .DivItemContainer, #search-content, [class*="video-result"], [class*="ItemContainer"], [data-e2e*="search"]');
   log.info(`Search results container found: ${!!resultsContainer}`);
+  
+  // Debug: List all data-e2e attributes
+  const dataE2eElements = await page.evaluate(() => {
+    const elements = document.querySelectorAll('[data-e2e]');
+    return Array.from(elements).slice(0, 20).map(el => el.getAttribute('data-e2e'));
+  });
+  log.info(`data-e2e elements: ${dataE2eElements.join(', ')}`);
+  
+  // Debug: Check for video links on page
+  const videoLinks = await page.evaluate(() => {
+    const links = document.querySelectorAll('a[href*="/video/"]');
+    return Array.from(links).slice(0, 5).map(a => a.href);
+  });
+  log.info(`Video links found: ${videoLinks.length}`);
+  if (videoLinks.length > 0) {
+    log.info(`Sample links: ${videoLinks.join(', ')}`);
+  }
   
   // Debug: Take screenshot if no results
   if (!resultsContainer) {
@@ -513,10 +553,26 @@ Actor.main(async () => {
         groups: ['RESIDENTIAL'],
       });
     } catch {
-      log.warning('No proxy configured. TikTok may block datacenter IPs.');
-      log.warning('Set APIFY_PROXY_PASSWORD or APIFY_TOKEN env var to use Apify Proxy locally.');
-      log.warning('Or run on Apify Platform for built-in residential proxy support.');
-      log.warning('Without a residential proxy, TikTok will show a verification challenge.');
+      // Try custom proxy URL from environment
+      const customProxyUrl = process.env.APIFY_PROXY_URL || process.env.PROXY_URL;
+      if (customProxyUrl) {
+        log.info(`Using custom proxy: ${customProxyUrl}`);
+        // Parse proxy URL to extract components
+        const url = new URL(customProxyUrl);
+        crawlerOptions.proxyConfiguration = {
+          proxyUrls: [customProxyUrl],
+        };
+        // Also set on launch context for direct browser proxy
+        crawlerOptions.launchContext.launchOptions.proxy = {
+          server: customProxyUrl,
+        };
+      } else {
+        log.warning('No proxy configured. TikTok may block datacenter IPs.');
+        log.warning('Set APIFY_PROXY_PASSWORD or APIFY_TOKEN env var to use Apify Proxy locally.');
+        log.warning('Or set APIFY_PROXY_URL for a custom proxy.');
+        log.warning('Or run on Apify Platform for built-in residential proxy support.');
+        log.warning('Without a residential proxy, TikTok will show a verification challenge.');
+      }
     }
   }
 
