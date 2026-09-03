@@ -1,0 +1,21 @@
+{
+  "name": "apify-tiktok-scraper",
+  "version": "1.0.0",
+  "description": "Apify actor that scrapes TikTok data using session cookies with network interception",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "dependencies": {
+    "apify": "^3.2.6",
+    "crawlee": "^3.12.0",
+    "playwright": "^1.49.0"
+  },
+  "devDependencies": {
+    "@apify/eslint-config": "^0.3.0"
+  },
+  "author": "",
+  "license": "ISC"
+}

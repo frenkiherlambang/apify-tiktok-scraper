@@ -1,0 +1,120 @@
+{
+  "title": "TikTok Scraper Actor",
+  "description": "Scrapes TikTok videos, profiles, and hashtags using session cookies. Uses network interception to capture data directly from TikTok's API without DOM parsing.",
+  "type": "object",
+  "schemaVersion": 1,
+  "required": ["queries"],
+  "properties": {
+    "mode": {
+      "title": "Scraping Mode",
+      "type": "string",
+      "enum": ["search", "hashtag", "profile"],
+      "description": "The type of scraping to perform. 'search' for keyword search, 'hashtag' for hashtag feeds, 'profile' for user profile feeds.",
+      "default": "search",
+      "editor": "select"
+    },
+    "queries": {
+      "title": "Search Queries",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of search queries, hashtags (with #), or usernames (with @) to scrape.",
+      "default": ["SamsungGalaxyS25Ultra"],
+      "editor": "json"
+    },
+    "maxItems": {
+      "title": "Max Items Per Query",
+      "type": "integer",
+      "description": "Maximum number of items to scrape per query. Default is 200.",
+      "default": 200,
+      "minimum": 1,
+      "maximum": 1000,
+      "editor": "number"
+    },
+    "sessionCookies": {
+      "title": "Session Cookies",
+      "type": "string",
+      "description": "TikTok session cookies in one of these formats: 1) Raw Cookie header string, 2) JSON array (EditThisCookie/Playwright format), 3) Netscape cookies.txt format. Required fields: sessionid, sessionid_ss, sid_tt, sid_guard.",
+      "default": "",
+      "editor": "textarea"
+    },
+    "cookiePool": {
+      "title": "Cookie Pool (Multiple Sessions)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Label for this cookie set (e.g., 'acct1')"
+          },
+          "cookies": {
+            "type": "string",
+            "description": "Session cookies for this account"
+          }
+        }
+      },
+      "description": "Multiple cookie sets for rotation. Useful for scaling and avoiding rate limits.",
+      "default": [],
+      "editor": "json"
+    },
+    "sortBy": {
+      "title": "Sort Order",
+      "type": "string",
+      "enum": ["relevance", "latest"],
+      "description": "Sort search results by relevance or latest posts.",
+      "default": "relevance",
+      "editor": "select"
+    },
+    "publishedWithin": {
+      "title": "Published Within",
+      "type": "string",
+      "enum": ["all", "1d", "7d", "30d", "90d", "180d"],
+      "description": "Filter results by when they were published.",
+      "default": "all",
+      "editor": "select"
+    },
+    "includeComments": {
+      "title": "Include Comments",
+      "type": "boolean",
+      "description": "Whether to scrape comments for each video.",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "commentsPerPost": {
+      "title": "Comments Per Post",
+      "type": "integer",
+      "description": "Maximum number of comments to scrape per video.",
+      "default": 20,
+      "minimum": 1,
+      "maximum": 100,
+      "editor": "number"
+    },
+    "downloadMedia": {
+      "title": "Download Media",
+      "type": "boolean",
+      "description": "Whether to download media files to KV store (video URLs expire in ~2 hours).",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "outputSchema": {
+      "title": "Output Schema",
+      "type": "string",
+      "enum": ["compat", "native", "both"],
+      "description": "'compat' matches the Threads-style schema, 'native' is full TikTok data, 'both' includes all fields.",
+      "default": "compat",
+      "editor": "select"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy configuration for the actor.",
+      "default": {
+        "useApifyProxy": true,
+        "groups": ["RESIDENTIAL"]
+      },
+      "editor": "proxy"
+    }
+  }
+}
