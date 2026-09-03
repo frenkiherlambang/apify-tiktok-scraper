@@ -300,12 +300,32 @@ async function scrapeQuery(page, context, query, config) {
 
   // Navigate to the search page
   await page.goto(url, {
-    waitUntil: 'domcontentloaded',
+    waitUntil: 'networkidle',
     timeout: 30000,
   });
 
-  // Wait for initial content
-  await page.waitForTimeout(3000);
+  // Wait for initial content - TikTok search is JS-rendered
+  await page.waitForTimeout(5000);
+
+  // Debug: Check page state
+  const pageTitle = await page.title();
+  const pageUrl = page.url();
+  log.info(`Page loaded: "${pageTitle}" at ${pageUrl}`);
+  
+  // Debug: Check if search results container exists
+  const resultsContainer = await page.$('[data-e2e="search-top-item"], [data-e2e="search-video-item"], .DivItemContainer, #search-content');
+  log.info(`Search results container found: ${!!resultsContainer}`);
+  
+  // Debug: Take screenshot if no results
+  if (!resultsContainer) {
+    const screenshotPath = `debug_screenshot_${Date.now()}.png`;
+    await page.screenshot({ path: screenshotPath, fullPage: false });
+    log.info(`No results found - screenshot saved to ${screenshotPath}`);
+    
+    // Log page HTML snippet
+    const bodyHTML = await page.evaluate(() => document.body.innerHTML.substring(0, 500));
+    log.info(`Page HTML snippet: ${bodyHTML}`);
+  }
 
   // Check for captcha or logged out state
   const captcha = await detectCaptcha(page);
@@ -317,6 +337,15 @@ async function scrapeQuery(page, context, query, config) {
   if (loggedOut) {
     throw new Error('Session appears to be logged out');
   }
+  
+  // Check if we're actually logged in by looking for user data
+  const isLoggedIn = await page.evaluate(() => {
+    // Check for elements that only appear when logged in
+    const profileIcon = document.querySelector('[data-e2e="profile-icon"]');
+    const loginButton = document.querySelector('[data-e2e="top-login-button"]');
+    return !!profileIcon && !loginButton;
+  });
+  log.info(`Appears logged in: ${isLoggedIn}`);
 
   // Setup pagination (scroll-based)
   const paginationResult = await setupPagination(page, {
@@ -397,9 +426,37 @@ Actor.main(async () => {
     launchContext: {
       launchOptions: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--window-size=1920,1080',
+          '--lang=en-US,en;q=0.9',
+        ],
       },
     },
+    preNavigationHooks: [
+      async (crawlingContext) => {
+        const { page } = crawlingContext;
+        // Override navigator.webdriver to avoid detection
+        await page.addInitScript(() => {
+          Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined,
+          });
+          // Override chrome detection
+          window.chrome = { runtime: {} };
+          // Override permissions
+          const originalQuery = window.navigator.permissions.query;
+          window.navigator.permissions.query = (parameters) =>
+            parameters.name === 'notifications'
+              ? Promise.resolve({ state: Notification.permission })
+              : originalQuery(parameters);
+        });
+      },
+    ],
     async requestHandler({ page, request }) {
       const query = request.userData.query;
       const currentSession = sessionManager.getCurrent();
@@ -442,23 +499,34 @@ Actor.main(async () => {
   };
 
   // Add proxy configuration only if on Apify platform (has proxy support)
+  // For local dev, you need APIFY_PROXY_PASSWORD or APIFY_TOKEN env var
+  // Or use a custom residential proxy
   if (Actor.apifyClient) {
     crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
       groups: ['RESIDENTIAL'],
       countryCode: targetIdc === 'alisg' ? 'SG' : (targetIdc === 'useast2a' ? 'US' : undefined),
     });
+  } else {
+    // Local development - try to use Apify Proxy if available
+    try {
+      crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
+        groups: ['RESIDENTIAL'],
+      });
+    } catch {
+      log.warning('No proxy configured. TikTok may block datacenter IPs.');
+      log.warning('Set APIFY_PROXY_PASSWORD or APIFY_TOKEN env var to use Apify Proxy locally.');
+    }
   }
 
   const crawler = new PlaywrightCrawler(crawlerOptions, Configuration.getGlobalConfig());
 
-  // Queue all queries
-  const requestQueue = await Actor.openRequestQueue();
-  for (const query of config.queries) {
-    await requestQueue.addRequest({
-      url: buildUrl(config.mode, query, config.sortBy, config.publishedWithin),
-      userData: { query },
-    });
-  }
+  // Queue all queries as requests
+  const requests = config.queries.map((query) => ({
+    url: buildUrl(config.mode, query, config.sortBy, config.publishedWithin),
+    userData: { query },
+  }));
+  
+  await crawler.addRequests(requests);
 
   // Run crawler
   await crawler.run();

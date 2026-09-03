@@ -58,11 +58,13 @@ export function sleep(ms) {
  */
 export async function detectCaptcha(page) {
   const captchaIndicators = [
-    'captcha_container',
-    'captcha-verify',
-    'tiktok-captcha',
-    '#captcha',
-    '.captcha',
+    '#captcha_container',
+    '#captcha-verify',
+    '.captcha-container',
+    '.captcha_box',
+    '[data-e2e="captcha-container"]',
+    '#tiktok-captcha',
+    '.verify-bar',
   ];
 
   for (const selector of captchaIndicators) {
@@ -70,27 +72,49 @@ export async function detectCaptcha(page) {
     if (element) return true;
   }
 
-  // Check for captcha in page content
+  // Check for captcha in page content - more specific patterns
   const pageContent = await page.content();
+  const lowerContent = pageContent.toLowerCase();
+  
+  // Only match actual captcha challenges, not normal page content
   const captchaPatterns = [
-    'captcha',
-    'verify',
-    'challenge',
-    'Please verify',
+    'please verify to continue',
+    'verify your identity',
+    'captcha challenge',
+    'are you a robot',
+    'are you human',
+    'recaptcha',
+    'hcaptcha',
+    'arkoselabs',
+    'geetest',
   ];
 
-  const lowerContent = pageContent.toLowerCase();
-  return captchaPatterns.some((pattern) => lowerContent.includes(pattern.toLowerCase()));
+  return captchaPatterns.some((pattern) => lowerContent.includes(pattern));
 }
 
 /**
  * Detect if we've been logged out
  */
 export async function detectLoggedOut(page) {
-  // Check for login button or "not logged in" indicators
+  // Check for login button - only if it's prominently displayed
   const loginButton = await page.$('[data-e2e="top-login-button"]');
-  const avatar = await page.$('[data-e2e="profile-icon"]');
-  return !!loginButton || !avatar;
+  if (loginButton) {
+    const isVisible = await loginButton.isVisible();
+    if (isVisible) return true;
+  }
+
+  // Check if we can find user-specific elements that only appear when logged in
+  const profileIcon = await page.$('[data-e2e="profile-icon"]');
+  const avatar = await page.$('span[data-e2e="profile-avatar"]');
+  
+  // If neither profile element exists, we might be logged out
+  // But only if we're on a page that should show them (not search)
+  const url = page.url();
+  if (!url.includes('/search') && !profileIcon && !avatar) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
