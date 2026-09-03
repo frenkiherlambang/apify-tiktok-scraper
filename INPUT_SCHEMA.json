@@ -44,7 +44,6 @@
       "type": "array",
       "items": {
         "type": "object",
-        "title": "Cookie Set",
         "properties": {
           "label": {
             "title": "Label",
