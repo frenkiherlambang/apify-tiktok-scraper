@@ -90,8 +90,9 @@ function buildUrl(mode, query, sortBy, publishedWithin) {
 
   switch (mode) {
     case 'search':
-      params.set('keyword', query);
-      params.set('offset', '0');
+      // TikTok search uses 'q' parameter
+      params.set('q', query);
+      params.set('lang', 'id');
       if (sortBy === 'latest') {
         params.set('sort_type', '1');
       }
@@ -101,19 +102,18 @@ function buildUrl(mode, query, sortBy, publishedWithin) {
       return `https://www.tiktok.com/search?${params.toString()}`;
 
     case 'hashtag': {
-      // Hashtag mode - use challenge endpoint
       const tagName = query.replace(/^#/, '');
       return `https://www.tiktok.com/tag/${tagName}`;
     }
 
     case 'profile': {
-      // Profile mode - use user endpoint
       const username = query.replace(/^@/, '');
       return `https://www.tiktok.com/@${username}`;
     }
 
     default:
-      params.set('keyword', query);
+      params.set('q', query);
+      params.set('lang', 'id');
       return `https://www.tiktok.com/search?${params.toString()}`;
   }
 }
@@ -209,64 +209,6 @@ async function scrapeComments(page, videoId, authorUsername, config) {
 }
 
 /**
- * Download media files to KV store
- */
-async function downloadMedia(kvStore, items, log) {
-  const downloaded = [];
-  
-  for (const item of items) {
-    // Download video if present
-    if (item.videos && item.videos.length > 0 && item.videos[0].url) {
-      try {
-        const response = await fetch(item.videos[0].url);
-        if (response.ok) {
-          const buffer = Buffer.from(await response.arrayBuffer());
-          const key = `video_${item.post_id}.mp4`;
-          await kvStore.setValue(key, buffer, { contentType: 'video/mp4' });
-          downloaded.push({ type: 'video', key, post_id: item.post_id });
-          log.info(`Downloaded video for post ${item.post_id}`);
-        }
-      } catch (error) {
-        log.warning(`Failed to download video for ${item.post_id}: ${error.message}`);
-      }
-    }
-    
-    // Download images if present (carousel posts)
-    if (item.images && item.images.length > 0) {
-      for (let i = 0; i < item.images.length; i++) {
-        try {
-          const response = await fetch(item.images[i]);
-          if (response.ok) {
-            const buffer = Buffer.from(await response.arrayBuffer());
-            const key = `image_${item.post_id}_${i}.jpg`;
-            await kvStore.setValue(key, buffer, { contentType: 'image/jpeg' });
-            downloaded.push({ type: 'image', key, post_id: item.post_id });
-          }
-        } catch (error) {
-          log.warning(`Failed to download image ${i} for ${item.post_id}: ${error.message}`);
-        }
-      }
-    }
-  }
-  
-  return downloaded;
-}
-
-/**
- * Block heavy resources for efficiency
- */
-async function setupResourceBlocking(page) {
-  await page.route('**/*', (route) => {
-    const type = route.request().resourceType();
-    // Block: image, media, font — NOT stylesheet (infinite scroll needs CSS)
-    if (['image', 'media', 'font'].includes(type)) {
-      return route.abort();
-    }
-    return route.continue();
-  });
-}
-
-/**
  * Main scraping function for a single query
  */
 async function scrapeQuery(page, context, query, config) {
@@ -280,8 +222,7 @@ async function scrapeQuery(page, context, query, config) {
   const url = buildUrl(config.mode, query, config.sortBy, config.publishedWithin);
   log.info(`Navigating to: ${url}`);
 
-  // Setup interceptors
-  const interceptedResponses = [];
+  // Setup interceptors BEFORE navigation
   setupInterceptors(page, {
     endpoints: [
       '/api/search/general/full/',
@@ -293,6 +234,7 @@ async function scrapeQuery(page, context, query, config) {
     dedupSet,
     onItem: (item) => {
       results.push(item);
+      log.info(`  Captured: ${item.post_id} - "${(item.text || '').substring(0, 50)}..."`);
     },
     onError: (error) => {
       log.warning(`Interceptor error: ${error.message}`);
@@ -302,92 +244,26 @@ async function scrapeQuery(page, context, query, config) {
   // Navigate directly to search URL
   await page.goto(url, {
     waitUntil: 'networkidle',
-    timeout: 30000,
+    timeout: 60000,
   });
 
-  // Wait for search results - TikTok is JS-rendered
+  // Wait for search results to load
   await page.waitForTimeout(5000);
 
   log.info(`Results after first load: ${results.length}`);
-  
-  // Debug: Check what the search API actually returns
-  const searchApiResponse = await page.evaluate(async () => {
-    try {
-      const response = await fetch('/api/search/general/full/?keyword=test&offset=0&count=10');
-      const data = await response.json();
-      return { status_code: data.status_code, dataLength: data.data?.length || 0 };
-    } catch (e) {
-      return { error: e.message };
-    }
-  });
-  log.info(`Direct API check: ${JSON.stringify(searchApiResponse)}`);
-
-  // Handle "Before you continue" verification page
-  const verifyButton = await page.$('button[data-e2e="verify-button"], button:has-text("Verify"), input[type="submit"]');
-  if (verifyButton) {
-    log.info('Verification page detected, attempting to click through...');
-    await verifyButton.click();
-    await page.waitForTimeout(5000);
-  }
 
   // Debug: Check page state
   const pageTitle = await page.title();
   const pageUrl = page.url();
   log.info(`Page loaded: "${pageTitle}" at ${pageUrl}`);
-  
-  // Debug: Check if search results container exists
-  const resultsContainer = await page.$('[data-e2e="search_top-item"], [data-e2e="search_video-item"], .DivItemContainer, #search-content, [class*="video-result"], [class*="ItemContainer"], [data-e2e*="search"]');
-  log.info(`Search results container found: ${!!resultsContainer}`);
-  
-  // Debug: List all data-e2e attributes
-  const dataE2eElements = await page.evaluate(() => {
-    const elements = document.querySelectorAll('[data-e2e]');
-    return Array.from(elements).slice(0, 20).map(el => el.getAttribute('data-e2e'));
-  });
-  log.info(`data-e2e elements: ${dataE2eElements.join(', ')}`);
-  
-  // Debug: Check for video links on page
-  const videoLinks = await page.evaluate(() => {
-    const links = document.querySelectorAll('a[href*="/video/"]');
-    return Array.from(links).slice(0, 5).map(a => a.href);
-  });
-  log.info(`Video links found: ${videoLinks.length}`);
-  if (videoLinks.length > 0) {
-    log.info(`Sample links: ${videoLinks.join(', ')}`);
-  }
-  
-  // Debug: Take screenshot if no results
-  if (!resultsContainer) {
-    const screenshotPath = `debug_screenshot_${Date.now()}.png`;
-    await page.screenshot({ path: screenshotPath, fullPage: false });
-    log.info(`No results found - screenshot saved to ${screenshotPath}`);
-    
-    // Log page HTML snippet
-    const bodyHTML = await page.evaluate(() => document.body.innerHTML.substring(0, 500));
-    log.info(`Page HTML snippet: ${bodyHTML}`);
-  }
 
-  // Check for captcha or logged out state
+  // Check for captcha
   const captcha = await detectCaptcha(page);
   if (captcha) {
     throw new CaptchaError(10000, 'Captcha detected on page load');
   }
 
-  const loggedOut = await detectLoggedOut(page);
-  if (loggedOut) {
-    throw new Error('Session appears to be logged out');
-  }
-  
-  // Check if we're actually logged in by looking for user data
-  const isLoggedIn = await page.evaluate(() => {
-    // Check for elements that only appear when logged in
-    const profileIcon = document.querySelector('[data-e2e="profile-icon"]');
-    const loginButton = document.querySelector('[data-e2e="top-login-button"]');
-    return !!profileIcon && !loginButton;
-  });
-  log.info(`Appears logged in: ${isLoggedIn}`);
-
-  // Setup pagination (scroll-based)
+  // Setup pagination (scroll-based) to load more results
   const paginationResult = await setupPagination(page, {
     targetCount: config.maxItems,
     stallLimit: DEFAULT_STALL_LIMIT,
@@ -407,7 +283,7 @@ async function scrapeQuery(page, context, query, config) {
     const videosWithComments = results.filter((r) => r.videos && r.videos.length > 0);
     log.info(`Scraping comments for ${videosWithComments.length} videos`);
     
-    for (const video of videosWithComments.slice(0, 10)) { // Limit to first 10 videos
+    for (const video of videosWithComments.slice(0, 10)) {
       try {
         const comments = await scrapeComments(page, video.post_id, video.user.username, config);
         video.comments = comments;
@@ -500,9 +376,6 @@ Actor.main(async () => {
     async requestHandler({ page, request }) {
       const query = request.userData.query;
       const currentSession = sessionManager.getCurrent();
-
-      // Setup resource blocking
-      await setupResourceBlocking(page);
 
       // Inject cookies from current session
       const context = page.context();
