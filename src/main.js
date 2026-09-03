@@ -515,6 +515,8 @@ Actor.main(async () => {
     } catch {
       log.warning('No proxy configured. TikTok may block datacenter IPs.');
       log.warning('Set APIFY_PROXY_PASSWORD or APIFY_TOKEN env var to use Apify Proxy locally.');
+      log.warning('Or run on Apify Platform for built-in residential proxy support.');
+      log.warning('Without a residential proxy, TikTok will show a verification challenge.');
     }
   }
 
