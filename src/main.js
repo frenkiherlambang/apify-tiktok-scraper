@@ -13,6 +13,14 @@ import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination } from './paginate.js';
 import { SessionManager, detectCaptcha, detectLoggedOut } from './antibot.js';
 
+// Local development fallback for logging
+const logger = {
+  info: (msg) => console.log(`[INFO] ${msg}`),
+  warning: (msg) => console.warn(`[WARN] ${msg}`),
+  error: (msg) => console.error(`[ERROR] ${msg}`),
+  debug: (msg) => console.debug(`[DEBUG] ${msg}`),
+};
+
 // Configuration
 const DEFAULT_MAX_ITEMS = 200;
 const DEFAULT_STALL_LIMIT = 5;
@@ -351,7 +359,7 @@ async function scrapeQuery(page, context, query, config) {
  */
 Actor.main(async () => {
   const input = await Actor.getInput() || {};
-  const log = Actor.log;
+  const log = Actor.log || logger;
 
   log.info('Starting TikTok Scraper Actor');
 
@@ -371,7 +379,7 @@ Actor.main(async () => {
   const sessionManager = new SessionManager(sessions, { maxRetriesPerSession: 3 });
 
   // Create crawler
-  const crawler = new PlaywrightCrawler({
+  const crawlerOptions = {
     maxRequestRetries: 3,
     requestHandlerTimeoutSecs: 300,
     launchContext: {
@@ -383,13 +391,9 @@ Actor.main(async () => {
     browserPool: {
       useFingerprints: false,
     },
-    proxyConfiguration: await Actor.createProxyConfiguration({
-      groups: ['RESIDENTIAL'],
-      countryCode: targetIdc === 'alisg' ? 'SG' : (targetIdc === 'useast2a' ? 'US' : undefined),
-    }),
     async requestHandler({ page, request }) {
       const query = request.userData.query;
-      let currentSession = sessionManager.getCurrent();
+      const currentSession = sessionManager.getCurrent();
 
       // Setup resource blocking
       await setupResourceBlocking(page);
@@ -400,7 +404,7 @@ Actor.main(async () => {
 
       // Scrape the query
       try {
-        const result = await scrapeQuery(page, { log: Actor.log }, query, config);
+        const result = await scrapeQuery(page, { log: Actor.log || logger }, query, config);
 
         // Push items to dataset
         for (const item of result.items) {
@@ -408,15 +412,15 @@ Actor.main(async () => {
           await Actor.pushData(filtered);
         }
 
-        Actor.log.info(`Pushed ${result.items.length} items to dataset for query: "${query}"`);
+        log.info(`Pushed ${result.items.length} items to dataset for query: "${query}"`);
       } catch (error) {
         // Handle session rotation on failure
-        Actor.log.error(`Error scraping "${query}": ${error.message}`);
+        log.error(`Error scraping "${query}": ${error.message}`);
         if (sessionManager.hasRemaining()) {
           sessionManager.markFailed(error.message);
           const nextSession = sessionManager.rotate();
           if (nextSession) {
-            Actor.log.info(`Rotating to next session. Remaining: ${sessionManager.getRemainingCount()}`);
+            log.info(`Rotating to next session. Remaining: ${sessionManager.getRemainingCount()}`);
             throw error; // Let crawler retry with new session
           }
         }
@@ -424,9 +428,19 @@ Actor.main(async () => {
       }
     },
     async failedRequestHandler({ request, error }) {
-      Actor.log.error(`Request failed for ${request.url}: ${error.message}`);
+      log.error(`Request failed for ${request.url}: ${error.message}`);
     },
-  }, Configuration.getGlobalConfig());
+  };
+
+  // Add proxy configuration only if on Apify platform (has proxy support)
+  if (Actor.apifyClient) {
+    crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
+      groups: ['RESIDENTIAL'],
+      countryCode: targetIdc === 'alisg' ? 'SG' : (targetIdc === 'useast2a' ? 'US' : undefined),
+    });
+  }
+
+  const crawler = new PlaywrightCrawler(crawlerOptions, Configuration.getGlobalConfig());
 
   // Queue all queries
   const requestQueue = await Actor.openRequestQueue();
