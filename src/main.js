@@ -8,6 +8,7 @@
 
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Configuration } from 'crawlee';
+import { readFileSync } from 'fs';
 import { normalizeCookies, validateCookies, getCookieHash, getTargetIdc } from './cookies.js';
 import { setupInterceptors, CaptchaError } from './intercept.js';
 import { setupPagination } from './paginate.js';
@@ -358,7 +359,18 @@ async function scrapeQuery(page, context, query, config) {
  * Main actor function
  */
 Actor.main(async () => {
-  const input = await Actor.getInput() || {};
+  let input = await Actor.getInput();
+  
+  // Fallback: read from local input file when not on Apify platform
+  if (!input || Object.keys(input).length === 0) {
+    try {
+      input = JSON.parse(readFileSync(new URL('../input.json', import.meta.url), 'utf8'));
+      logger.info('Loaded input from input.json');
+    } catch {
+      input = {};
+    }
+  }
+  
   const log = Actor.log || logger;
 
   log.info('Starting TikTok Scraper Actor');
