@@ -400,9 +400,6 @@ Actor.main(async () => {
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
       },
     },
-    browserPool: {
-      useFingerprints: false,
-    },
     async requestHandler({ page, request }) {
       const query = request.userData.query;
       const currentSession = sessionManager.getCurrent();
