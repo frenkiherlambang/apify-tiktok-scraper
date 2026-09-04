@@ -250,6 +250,23 @@ async function scrapeQuery(page, context, query, config) {
   await page.waitForTimeout(3000);
   log.info(`Results after initial load: ${results.length}`);
 
+  // Diagnostic: log page state
+  const pageTitle = await page.title();
+  const pageUrl = page.url();
+  log.info(`Page loaded: title="${pageTitle}", url="${pageUrl}"`);
+
+  // Check if redirected to login or captcha
+  if (pageUrl.includes('/login') || pageUrl.includes('/verify')) {
+    log.warning('Redirected to login/verify page - cookies may be invalid');
+    throw new Error('Session expired or invalid - redirected to login');
+  }
+
+  // Check page content for error indicators
+  const pageContent = await page.content();
+  if (pageContent.length < 1000) {
+    log.warning(`Page content suspiciously small: ${pageContent.length} bytes`);
+  }
+
   // Check for captcha challenge
   const hasCaptcha = await detectCaptcha(page);
   if (hasCaptcha) {
@@ -262,14 +279,34 @@ async function scrapeQuery(page, context, query, config) {
     log.info('Waiting for initial API response...');
     try {
       await page.waitForResponse(
-        (res) => res.url().includes('/api/search/') && res.status() === 200,
-        { timeout: 15000 }
+        (res) => res.url().includes('/api/') && res.status() === 200,
+        { timeout: 20000 }
       );
       await page.waitForTimeout(1000);
       log.info(`Results after API wait: ${results.length}`);
     } catch {
       log.warning('No API response captured, proceeding anyway');
+      // Diagnostic: log all network responses
+      page.on('response', async (res) => {
+        if (res.url().includes('tiktok.com')) {
+          log.debug(`Network: ${res.status()} ${res.url().substring(0, 200)}`);
+        }
+      });
     }
+  }
+
+  // Final diagnostic: log DOM element counts
+  const domDebug = await page.evaluate(() => {
+    return {
+      searchItems: document.querySelectorAll('[data-e2e*="search"]').length,
+      videoLinks: document.querySelectorAll('a[href*="/video/"]').length,
+      genericLinks: document.querySelectorAll('a').length,
+      bodyText: document.body.innerText.substring(0, 500),
+    };
+  });
+  log.info(`DOM debug: searchItems=${domDebug.searchItems}, videoLinks=${domDebug.videoLinks}, links=${domDebug.genericLinks}`);
+  if (domDebug.bodyText) {
+    log.info(`Page text preview: ${domDebug.bodyText.substring(0, 200)}...`);
   }
 
   // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
@@ -288,6 +325,18 @@ async function scrapeQuery(page, context, query, config) {
   });
 
   log.info(`Scraped ${results.length} items for query: "${query}"`);
+
+  // Capture screenshot if no results for debugging
+  if (results.length === 0) {
+    try {
+      const screenshotBuffer = await page.screenshot({ fullPage: false });
+      const kvStore = await Actor.openKeyValueStore();
+      await kvStore.setValue(`debug_screenshot_${query.replace(/[^a-z0-9]/gi, '_')}`, screenshotBuffer, { contentType: 'image/png' });
+      log.info('Saved debug screenshot to KV store');
+    } catch (screenshotError) {
+      log.warning(`Failed to save screenshot: ${screenshotError.message}`);
+    }
+  }
 
   // Optionally scrape comments for each video
   if (config.includeComments) {
