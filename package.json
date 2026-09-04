@@ -1,6 +1,6 @@
 {
   "name": "apify-tiktok-scraper",
-  "version": "1.0",
+  "version": "1.0.0",
   "description": "Apify actor that scrapes TikTok data using session cookies with network interception",
   "main": "src/main.js",
   "type": "module",

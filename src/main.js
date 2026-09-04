@@ -211,85 +211,51 @@ async function scrapeComments(page, videoId, authorUsername, config) {
 
 /**
  * Main scraping function for a single query
- *
- * NOTE: The page is already navigated (by Crawlee) and authenticated before this
- * runs - cookies, interceptors and waitUntil are set up in preNavigationHooks.
  */
-async function scrapeQuery(page, context, query, config, capture) {
+async function scrapeQuery(page, context, query, config) {
   const { log } = context;
-  const { results, dedupSet } = capture;
+  const results = [];
+  const dedupSet = new Set();
 
-  log.info(`Scraping query: "${query}" (page already loaded)`);
+  log.info(`Scraping query: "${query}"`);
+
+  // Build URL
+  const url = buildUrl(config.mode, query, config.sortBy, config.publishedWithin);
+  log.info(`Navigating to: ${url}`);
+
+  // Setup interceptor BEFORE navigation - captures initial search API response
+  setupInterceptors(page, {
+    endpoints: [
+      '/api/search/general/full/',
+      '/api/search/item/full/',
+      '/api/challenge/item_list/',
+      '/api/post/item_list/',
+      '/api/comment/list/',
+    ],
+    dedupSet,
+    onItem: (item) => {
+      results.push(item);
+    },
+    onError: (error) => {
+      log.warning(`Interceptor error: ${error.message}`);
+    },
+  });
+
+  // Navigate to search page - TikTok's JS fires the initial API call
+  await page.goto(url, {
+    waitUntil: 'networkidle',
+    timeout: 60000,
+  });
 
   await page.waitForTimeout(3000);
   log.info(`Results after initial load: ${results.length}`);
-
-  // Diagnostic: log page state
-  const pageTitle = await page.title();
-  const pageUrl = page.url();
-  log.info(`Page loaded: title="${pageTitle}", url="${pageUrl}"`);
-
-  // Check if redirected to login or captcha
-  if (pageUrl.includes('/login') || pageUrl.includes('/verify')) {
-    log.warning('Redirected to login/verify page - cookies may be invalid');
-    throw new Error('Session expired or invalid - redirected to login');
-  }
-
-  // Check page content for error indicators
-  const pageContent = await page.content();
-  if (pageContent.length < 1000) {
-    log.warning(`Page content suspiciously small: ${pageContent.length} bytes`);
-  }
-
-  // Check for captcha challenge
-  const hasCaptcha = await detectCaptcha(page);
-  if (hasCaptcha) {
-    log.warning('Captcha challenge detected, aborting query');
-    throw new CaptchaError(10000, 'Captcha challenge detected on page');
-  }
-
-  // Wait for initial API response if none captured yet
-  if (results.length === 0) {
-    log.info('Waiting for initial API response...');
-    try {
-      await page.waitForResponse(
-        (res) => res.url().includes('/api/') && res.status() === 200,
-        { timeout: 20000 }
-      );
-      await page.waitForTimeout(1000);
-      log.info(`Results after API wait: ${results.length}`);
-    } catch {
-      log.warning('No API response captured, proceeding anyway');
-      // Diagnostic: log all network responses
-      page.on('response', async (res) => {
-        if (res.url().includes('tiktok.com')) {
-          log.debug(`Network: ${res.status()} ${res.url().substring(0, 200)}`);
-        }
-      });
-    }
-  }
-
-  // Final diagnostic: log DOM element counts
-  const domDebug = await page.evaluate(() => {
-    return {
-      searchItems: document.querySelectorAll('[data-e2e*="search"]').length,
-      videoLinks: document.querySelectorAll('a[href*="/video/"]').length,
-      genericLinks: document.querySelectorAll('a').length,
-      bodyText: document.body.innerText.substring(0, 500),
-    };
-  });
-  log.info(`DOM debug: searchItems=${domDebug.searchItems}, videoLinks=${domDebug.videoLinks}, links=${domDebug.genericLinks}`);
-  if (domDebug.bodyText) {
-    log.info(`Page text preview: ${domDebug.bodyText.substring(0, 200)}...`);
-  }
 
   // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
   // and the interceptor captures each new API response
   await setupPagination(page, {
     targetCount: config.maxItems,
     stallLimit: 3,
-    scrollDelay: 2000,
-    maxScrolls: 30,
+    scrollDelay: 2500,
     onScroll: (info) => {
       log.info(`Scroll ${info.scrollCount}: captured=${results.length}, DOM=${info.currentCount} (${info.itemsGained} new)`);
     },
@@ -299,18 +265,6 @@ async function scrapeQuery(page, context, query, config, capture) {
   });
 
   log.info(`Scraped ${results.length} items for query: "${query}"`);
-
-  // Capture screenshot if no results for debugging
-  if (results.length === 0) {
-    try {
-      const screenshotBuffer = await page.screenshot({ fullPage: false });
-      const kvStore = await Actor.openKeyValueStore();
-      await kvStore.setValue(`debug_screenshot_${query.replace(/[^a-z0-9]/gi, '_')}`, screenshotBuffer, { contentType: 'image/png' });
-      log.info('Saved debug screenshot to KV store');
-    } catch (screenshotError) {
-      log.warning(`Failed to save screenshot: ${screenshotError.message}`);
-    }
-  }
 
   // Optionally scrape comments for each video
   if (config.includeComments) {
@@ -371,9 +325,8 @@ Actor.main(async () => {
 
   // Create crawler
   const crawlerOptions = {
-    maxRequestRetries: 1,
-    requestHandlerTimeoutSecs: 180,
-    navigationTimeoutSecs: 45,
+    maxRequestRetries: 3,
+    requestHandlerTimeoutSecs: 300,
     launchContext: {
       launchOptions: {
         headless: true,
@@ -386,26 +339,12 @@ Actor.main(async () => {
           '--disable-gpu',
           '--window-size=1920,1080',
           '--lang=en-US,en;q=0.9',
-          '--disable-extensions',
-          '--disable-background-timer-throttling',
-          '--disable-backgrounding-occluded-windows',
-          '--disable-renderer-backgrounding',
-          '--disable-features=TranslateUI',
-          '--disable-ipc-flooding-protection',
-          '--no-zygote',
-          '--memory-pressure-off',
         ],
       },
     },
     preNavigationHooks: [
-      async (crawlingContext, gotoOptions) => {
+      async (crawlingContext) => {
         const { page } = crawlingContext;
-        const currentSession = sessionManager.getCurrent();
-
-        // Inject cookies BEFORE navigation so the first (and only) page load is authenticated
-        const context = page.context();
-        await context.addCookies(currentSession);
-
         // Override navigator.webdriver to avoid detection
         await page.addInitScript(() => {
           Object.defineProperty(navigator, 'webdriver', {
@@ -420,52 +359,19 @@ Actor.main(async () => {
               ? Promise.resolve({ state: Notification.permission })
               : originalQuery(parameters);
         });
-
-        // Crawlee's default is 'load' which often hangs on TikTok - use domcontentloaded
-        gotoOptions.waitUntil = 'domcontentloaded';
-        gotoOptions.timeout = 45000;
-
-        // Setup interceptors BEFORE navigation - captures the initial search API response.
-        // Results are shared with requestHandler via the crawling context.
-        const results = [];
-        const dedupSet = new Set();
-        setupInterceptors(page, {
-          endpoints: [
-            '/api/search/general/full/',
-            '/api/search/item/full/',
-            '/api/challenge/item_list/',
-            '/api/post/item_list/',
-            '/api/comment/list/',
-          ],
-          dedupSet,
-          onItem: (item) => {
-            results.push(item);
-          },
-          onError: (error) => {
-            log.warning(`Interceptor error: ${error.message}`);
-          },
-        });
-        crawlingContext.capture = { results, dedupSet };
       },
     ],
-    async requestHandler(crawlingContext) {
-      const { page, request } = crawlingContext;
+    async requestHandler({ page, request }) {
       const query = request.userData.query;
-      const capture = crawlingContext.capture || { results: [], dedupSet: new Set() };
+      const currentSession = sessionManager.getCurrent();
 
-      // Scrape the query with a hard timeout to prevent actor abort
+      // Inject cookies from current session
+      const context = page.context();
+      await context.addCookies(currentSession);
+
+      // Scrape the query
       try {
-        const scrapeTimeoutMs = 120000; // 2 minutes per query max
-        let timeoutId;
-        const result = await Promise.race([
-          scrapeQuery(page, { log: Actor.log || logger }, query, config, capture),
-          new Promise((_, reject) => {
-            timeoutId = setTimeout(
-              () => reject(new Error(`Scrape timeout after ${scrapeTimeoutMs}ms`)),
-              scrapeTimeoutMs
-            );
-          }),
-        ]).finally(() => clearTimeout(timeoutId));
+        const result = await scrapeQuery(page, { log: Actor.log || logger }, query, config);
 
         // Push items to dataset
         for (const item of result.items) {
