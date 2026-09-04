@@ -211,41 +211,15 @@ async function scrapeComments(page, videoId, authorUsername, config) {
 
 /**
  * Main scraping function for a single query
+ *
+ * NOTE: The page is already navigated (by Crawlee) and authenticated before this
+ * runs - cookies, interceptors and waitUntil are set up in preNavigationHooks.
  */
-async function scrapeQuery(page, context, query, config) {
+async function scrapeQuery(page, context, query, config, capture) {
   const { log } = context;
-  const results = [];
-  const dedupSet = new Set();
+  const { results, dedupSet } = capture;
 
-  log.info(`Scraping query: "${query}"`);
-
-  // Build URL
-  const url = buildUrl(config.mode, query, config.sortBy, config.publishedWithin);
-  log.info(`Navigating to: ${url}`);
-
-  // Setup interceptor BEFORE navigation - captures initial search API response
-  setupInterceptors(page, {
-    endpoints: [
-      '/api/search/general/full/',
-      '/api/search/item/full/',
-      '/api/challenge/item_list/',
-      '/api/post/item_list/',
-      '/api/comment/list/',
-    ],
-    dedupSet,
-    onItem: (item) => {
-      results.push(item);
-    },
-    onError: (error) => {
-      log.warning(`Interceptor error: ${error.message}`);
-    },
-  });
-
-  // Navigate to search page - TikTok's JS fires the initial API call
-  await page.goto(url, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000,
-  });
+  log.info(`Scraping query: "${query}" (page already loaded)`);
 
   await page.waitForTimeout(3000);
   log.info(`Results after initial load: ${results.length}`);
@@ -399,6 +373,7 @@ Actor.main(async () => {
   const crawlerOptions = {
     maxRequestRetries: 1,
     requestHandlerTimeoutSecs: 180,
+    navigationTimeoutSecs: 45,
     launchContext: {
       launchOptions: {
         headless: true,
@@ -423,8 +398,14 @@ Actor.main(async () => {
       },
     },
     preNavigationHooks: [
-      async (crawlingContext) => {
+      async (crawlingContext, gotoOptions) => {
         const { page } = crawlingContext;
+        const currentSession = sessionManager.getCurrent();
+
+        // Inject cookies BEFORE navigation so the first (and only) page load is authenticated
+        const context = page.context();
+        await context.addCookies(currentSession);
+
         // Override navigator.webdriver to avoid detection
         await page.addInitScript(() => {
           Object.defineProperty(navigator, 'webdriver', {
@@ -439,26 +420,52 @@ Actor.main(async () => {
               ? Promise.resolve({ state: Notification.permission })
               : originalQuery(parameters);
         });
+
+        // Crawlee's default is 'load' which often hangs on TikTok - use domcontentloaded
+        gotoOptions.waitUntil = 'domcontentloaded';
+        gotoOptions.timeout = 45000;
+
+        // Setup interceptors BEFORE navigation - captures the initial search API response.
+        // Results are shared with requestHandler via the crawling context.
+        const results = [];
+        const dedupSet = new Set();
+        setupInterceptors(page, {
+          endpoints: [
+            '/api/search/general/full/',
+            '/api/search/item/full/',
+            '/api/challenge/item_list/',
+            '/api/post/item_list/',
+            '/api/comment/list/',
+          ],
+          dedupSet,
+          onItem: (item) => {
+            results.push(item);
+          },
+          onError: (error) => {
+            log.warning(`Interceptor error: ${error.message}`);
+          },
+        });
+        crawlingContext.capture = { results, dedupSet };
       },
     ],
-    async requestHandler({ page, request }) {
+    async requestHandler(crawlingContext) {
+      const { page, request } = crawlingContext;
       const query = request.userData.query;
-      const currentSession = sessionManager.getCurrent();
-
-      // Inject cookies from current session
-      const context = page.context();
-      await context.addCookies(currentSession);
+      const capture = crawlingContext.capture || { results: [], dedupSet: new Set() };
 
       // Scrape the query with a hard timeout to prevent actor abort
       try {
         const scrapeTimeoutMs = 120000; // 2 minutes per query max
+        let timeoutId;
         const result = await Promise.race([
-          scrapeQuery(page, { log: Actor.log || logger }, query, config),
-          new Promise((_, reject) => setTimeout(
-            () => reject(new Error(`Scrape timeout after ${scrapeTimeoutMs}ms`)),
-            scrapeTimeoutMs
-          )),
-        ]);
+          scrapeQuery(page, { log: Actor.log || logger }, query, config, capture),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error(`Scrape timeout after ${scrapeTimeoutMs}ms`)),
+              scrapeTimeoutMs
+            );
+          }),
+        ]).finally(() => clearTimeout(timeoutId));
 
         // Push items to dataset
         for (const item of result.items) {
