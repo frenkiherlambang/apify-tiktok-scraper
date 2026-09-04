@@ -69,6 +69,21 @@ export async function setupPagination(page, options = {}) {
     }
 
     lastItemCount = newCount;
+
+    // Memory management: periodically clear DOM cache
+    if (scrollCount % 10 === 0) {
+      await page.evaluate(() => {
+        // Remove old video elements from DOM to free memory
+        const videos = document.querySelectorAll('a[href*="/video/"]');
+        if (videos.length > 100) {
+          // Keep only the last 50 elements
+          const toRemove = videos.length - 50;
+          for (let i = 0; i < toRemove; i++) {
+            videos[i].remove();
+          }
+        }
+      }).catch(() => {});
+    }
   }
 
   onComplete({ reason: 'max_scrolls', scrollCount, totalItems: lastItemCount });

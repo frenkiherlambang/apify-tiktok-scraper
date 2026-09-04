@@ -243,19 +243,42 @@ async function scrapeQuery(page, context, query, config) {
 
   // Navigate to search page - TikTok's JS fires the initial API call
   await page.goto(url, {
-    waitUntil: 'networkidle',
-    timeout: 60000,
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
   });
 
   await page.waitForTimeout(3000);
   log.info(`Results after initial load: ${results.length}`);
+
+  // Check for captcha challenge
+  const hasCaptcha = await detectCaptcha(page);
+  if (hasCaptcha) {
+    log.warning('Captcha challenge detected, aborting query');
+    throw new CaptchaError(10000, 'Captcha challenge detected on page');
+  }
+
+  // Wait for initial API response if none captured yet
+  if (results.length === 0) {
+    log.info('Waiting for initial API response...');
+    try {
+      await page.waitForResponse(
+        (res) => res.url().includes('/api/search/') && res.status() === 200,
+        { timeout: 15000 }
+      );
+      await page.waitForTimeout(1000);
+      log.info(`Results after API wait: ${results.length}`);
+    } catch {
+      log.warning('No API response captured, proceeding anyway');
+    }
+  }
 
   // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
   // and the interceptor captures each new API response
   await setupPagination(page, {
     targetCount: config.maxItems,
     stallLimit: 3,
-    scrollDelay: 2500,
+    scrollDelay: 2000,
+    maxScrolls: 30,
     onScroll: (info) => {
       log.info(`Scroll ${info.scrollCount}: captured=${results.length}, DOM=${info.currentCount} (${info.itemsGained} new)`);
     },
@@ -325,8 +348,8 @@ Actor.main(async () => {
 
   // Create crawler
   const crawlerOptions = {
-    maxRequestRetries: 3,
-    requestHandlerTimeoutSecs: 300,
+    maxRequestRetries: 1,
+    requestHandlerTimeoutSecs: 180,
     launchContext: {
       launchOptions: {
         headless: true,
@@ -339,6 +362,14 @@ Actor.main(async () => {
           '--disable-gpu',
           '--window-size=1920,1080',
           '--lang=en-US,en;q=0.9',
+          '--disable-extensions',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-features=TranslateUI',
+          '--disable-ipc-flooding-protection',
+          '--no-zygote',
+          '--memory-pressure-off',
         ],
       },
     },
@@ -369,9 +400,16 @@ Actor.main(async () => {
       const context = page.context();
       await context.addCookies(currentSession);
 
-      // Scrape the query
+      // Scrape the query with a hard timeout to prevent actor abort
       try {
-        const result = await scrapeQuery(page, { log: Actor.log || logger }, query, config);
+        const scrapeTimeoutMs = 120000; // 2 minutes per query max
+        const result = await Promise.race([
+          scrapeQuery(page, { log: Actor.log || logger }, query, config),
+          new Promise((_, reject) => setTimeout(
+            () => reject(new Error(`Scrape timeout after ${scrapeTimeoutMs}ms`)),
+            scrapeTimeoutMs
+          )),
+        ]);
 
         // Push items to dataset
         for (const item of result.items) {
