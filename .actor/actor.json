@@ -3,7 +3,7 @@
   "name": "tiktok-scraper",
   "title": "TikTok Scraper",
   "description": "Scrape TikTok search results, hashtags, and profiles using session cookies with network interception. Captures 100+ items per query via scroll pagination.",
-  "version": "1.0.0",
+  "version": "1.0",
   "meta": {
     "template": "project-playwright"
   },
