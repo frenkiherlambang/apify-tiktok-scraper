@@ -5,6 +5,8 @@
   "sessionCookies": "sessionid=YOUR_SESSIONID; sessionid_ss=YOUR_SESSIONID; sid_tt=YOUR_SESSIONID; sid_guard=YOUR_SID_GUARD",
   "sortBy": "relevance",
   "publishedWithin": "all",
+  "dateFrom": "",
+  "dateTo": "",
   "includeComments": false,
   "commentsPerPost": 20,
   "downloadMedia": false,

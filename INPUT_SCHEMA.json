@@ -73,8 +73,30 @@
       "title": "Published Within",
       "type": "string",
       "enum": ["all", "1d", "7d", "30d", "90d", "180d"],
-      "description": "Filter results by when they were published.",
+      "description": "Server-side time filter for search mode: all, 1 day, 7 days, 30 days, 90 days, or 180 days.",
       "default": "all",
+      "editor": "select"
+    },
+    "dateFrom": {
+      "title": "Date From",
+      "type": "string",
+      "description": "Only keep posts published on or after this date. Accepts 'YYYY-MM-DD' or an ISO datetime string (e.g. '2025-01-01' or '2025-01-01T00:00:00Z'). Applied client-side to all modes; can be combined with dateTo.",
+      "default": "",
+      "editor": "textfield"
+    },
+    "dateTo": {
+      "title": "Date To",
+      "type": "string",
+      "description": "Only keep posts published on or before this date. Accepts 'YYYY-MM-DD' (inclusive, through end of day UTC) or an ISO datetime string. Applied client-side to all modes; can be combined with dateFrom.",
+      "default": "",
+      "editor": "textfield"
+    },
+    "language": {
+      "title": "Result Language",
+      "type": "string",
+      "enum": ["id", "en", "ms", "th", "vi", "ja", "ko", "es", "pt"],
+      "description": "ISO language code used to scope search results (sets the lang URL parameter and the browser locale). Default is 'id' (Indonesian).",
+      "default": "id",
       "editor": "select"
     },
     "includeComments": {

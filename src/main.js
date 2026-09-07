@@ -39,6 +39,9 @@ async function parseInput(input) {
   const cookiePool = input.cookiePool || [];
   const sortBy = input.sortBy || 'relevance';
   const publishedWithin = input.publishedWithin || 'all';
+  const dateFromMs = parseDateBound(input.dateFrom);
+  const dateToMs = parseDateBound(input.dateTo, { endOfDay: true });
+  const language = input.language || 'id';
   const includeComments = input.includeComments || false;
   const commentsPerPost = input.commentsPerPost || 20;
   const downloadMedia = input.downloadMedia || false;
@@ -68,6 +71,14 @@ async function parseInput(input) {
     throw new Error(`Invalid cookies: ${validation.reason}`);
   }
 
+  if (dateFromMs !== null && dateToMs !== null && dateFromMs > dateToMs) {
+    throw new Error('dateFrom must be before or equal to dateTo');
+  }
+
+  const dateRange = (dateFromMs !== null || dateToMs !== null)
+    ? { from: dateFromMs, to: dateToMs }
+    : null;
+
   return {
     mode,
     queries,
@@ -76,6 +87,8 @@ async function parseInput(input) {
     cookiePool,
     sortBy,
     publishedWithin,
+    dateRange,
+    language,
     includeComments,
     commentsPerPost,
     downloadMedia,
@@ -86,14 +99,14 @@ async function parseInput(input) {
 /**
  * Build the TikTok URL based on mode and query
  */
-function buildUrl(mode, query, sortBy, publishedWithin) {
+function buildUrl(mode, query, sortBy, publishedWithin, language = 'id') {
   const params = new URLSearchParams();
 
   switch (mode) {
     case 'search':
       // TikTok search uses 'q' parameter
       params.set('q', query);
-      params.set('lang', 'id');
+      params.set('lang', language);
       if (sortBy === 'latest') {
         params.set('sort_type', '1');
       }
@@ -114,9 +127,53 @@ function buildUrl(mode, query, sortBy, publishedWithin) {
 
     default:
       params.set('q', query);
-      params.set('lang', 'id');
+      params.set('lang', language);
       return `https://www.tiktok.com/search?${params.toString()}`;
   }
+}
+
+/**
+ * Map an ISO language code to a Chromium --lang value.
+ * The browser locale drives TikTok's search API language params
+ * (e.g. language/app_language on /api/search/*), so it must match
+ * the lang param we set on the search URL.
+ */
+function toChromiumLang(code) {
+  const map = {
+    id: 'id-ID,id;q=0.9',
+    en: 'en-US,en;q=0.9',
+    ms: 'ms-MY,ms;q=0.9',
+    th: 'th-TH,th;q=0.9',
+    vi: 'vi-VN,vi;q=0.9',
+    ja: 'ja-JP,ja;q=0.9',
+    ko: 'ko-KR,ko;q=0.9',
+    es: 'es-ES,es;q=0.9',
+    pt: 'pt-BR,pt;q=0.9',
+  };
+  return map[code] || 'en-US,en;q=0.9';
+}
+
+/**
+ * Parse a date boundary into epoch milliseconds.
+ * Accepts 'YYYY-MM-DD' (treated as UTC; endOfDay extends it to 23:59:59.999)
+ * or any parseable ISO datetime string (offset honored as given).
+ * Returns null when the value is empty.
+ */
+function parseDateBound(value, { endOfDay = false } = {}) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const time = endOfDay ? 'T23:59:59.999Z' : 'T00:00:00.000Z';
+    return new Date(`${trimmed}${time}`).getTime();
+  }
+
+  const ms = new Date(trimmed).getTime();
+  if (Number.isNaN(ms)) {
+    throw new Error(`Invalid date: "${trimmed}". Use YYYY-MM-DD or an ISO datetime string.`);
+  }
+  return ms;
 }
 
 /**
@@ -131,6 +188,24 @@ function publishTimeToCode(within) {
     '180d': '4',
   };
   return mapping[within] || '0';
+}
+
+/**
+ * Check a normalized item against the dateRange filter.
+ * Applies to posts only (comments are left untouched); posts with an
+ * unknown/invalid timestamp are excluded when a range is active.
+ */
+function isWithinDateRange(item, range) {
+  if (!range) return true;
+  if (item._type === 'comment') return true;
+  if (!item.timestamp) return false;
+
+  const ms = new Date(item.timestamp).getTime();
+  if (Number.isNaN(ms)) return false;
+
+  if (range.from !== null && ms < range.from) return false;
+  if (range.to !== null && ms > range.to) return false;
+  return true;
 }
 
 /**
@@ -219,8 +294,15 @@ async function scrapeQuery(page, context, query, config) {
 
   log.info(`Scraping query: "${query}"`);
 
+  if (config.dateRange) {
+    const fmt = (ms) => (ms === null ? '∞' : new Date(ms).toISOString());
+    log.info(`Date range filter active: ${fmt(config.dateRange.from)} .. ${fmt(config.dateRange.to)}`);
+  }
+
+  let skippedByDate = 0;
+
   // Build URL
-  const url = buildUrl(config.mode, query, config.sortBy, config.publishedWithin);
+  const url = buildUrl(config.mode, query, config.sortBy, config.publishedWithin, config.language);
   log.info(`Navigating to: ${url}`);
 
   // Setup interceptor BEFORE navigation - captures initial search API response
@@ -234,6 +316,10 @@ async function scrapeQuery(page, context, query, config) {
     ],
     dedupSet,
     onItem: (item) => {
+      if (!isWithinDateRange(item, config.dateRange)) {
+        skippedByDate += 1;
+        return;
+      }
       results.push(item);
     },
     onError: (error) => {
@@ -264,7 +350,8 @@ async function scrapeQuery(page, context, query, config) {
     },
   });
 
-  log.info(`Scraped ${results.length} items for query: "${query}"`);
+  log.info(`Scraped ${results.length} items for query: "${query}"` +
+    (skippedByDate > 0 ? ` (skipped ${skippedByDate} outside date range)` : ''));
 
   // Optionally scrape comments for each video
   if (config.includeComments) {
@@ -338,7 +425,7 @@ Actor.main(async () => {
           '--disable-accelerated-2d-canvas',
           '--disable-gpu',
           '--window-size=1920,1080',
-          '--lang=en-US,en;q=0.9',
+          `--lang=${toChromiumLang(config.language)}`,
         ],
       },
     },
@@ -441,7 +528,7 @@ Actor.main(async () => {
 
   // Queue all queries as requests
   const requests = config.queries.map((query) => ({
-    url: buildUrl(config.mode, query, config.sortBy, config.publishedWithin),
+    url: buildUrl(config.mode, query, config.sortBy, config.publishedWithin, config.language),
     userData: { query },
   }));
   

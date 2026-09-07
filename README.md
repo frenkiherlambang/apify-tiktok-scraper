@@ -22,7 +22,9 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 | `sessionCookies` | string | `""` | Session cookies (raw header, JSON, or cookies.txt) |
 | `cookiePool` | array | `[]` | Multiple cookie sets for rotation |
 | `sortBy` | string | `relevance` | Sort order: `relevance` or `latest` |
-| `publishedWithin` | string | `all` | Time filter: `all`, `1d`, `7d`, `30d`, `90d`, `180d` |
+| `publishedWithin` | string | `all` | Server-side time filter: `all`, `1d`, `7d`, `30d`, `90d`, `180d` |
+| `dateFrom` | string | `""` | Keep posts published on/after this date (`YYYY-MM-DD` or ISO datetime). Client-side, all modes |
+| `dateTo` | string | `""` | Keep posts published on/before this date (inclusive). Client-side, all modes |
 | `includeComments` | boolean | `false` | Whether to scrape comments |
 | `commentsPerPost` | integer | `20` | Max comments per video |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
