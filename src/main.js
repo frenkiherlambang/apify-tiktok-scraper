@@ -327,13 +327,53 @@ async function scrapeQuery(page, context, query, config) {
     },
   });
 
-  // Navigate to search page - TikTok's JS fires the initial API call
-  await page.goto(url, {
-    waitUntil: 'networkidle',
-    timeout: 60000,
-  });
+  // Navigate to search page - TikTok's JS fires the initial API call.
+  // NOTE: never use waitUntil networkidle on TikTok - its long-polling /
+  // analytics beacons keep the network busy forever and goto always times
+  // out after 60s (see run log: page.goto Timeout 60000ms exceeded).
+  // domcontentloaded + explicit wait for results/captcha is reliable.
+  let navigated = false;
+  let lastGotoError = null;
+  for (let attempt = 1; attempt <= 2 && !navigated; attempt += 1) {
+    try {
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
+      navigated = true;
+    } catch (err) {
+      lastGotoError = err;
+      log.warning(`Navigation attempt ${attempt}/2 failed: ${err.message.split('\n')[0]}`);
+      if (attempt < 2) await page.waitForTimeout(2000);
+    }
+  }
+  if (!navigated) throw lastGotoError;
 
+  // Give TikTok's SPA a moment to boot, then check what we actually got
+  // (results, captcha wall, or login wall) instead of waiting blindly.
   await page.waitForTimeout(3000);
+  try {
+    await page.waitForSelector(
+      'a[href*="/video/"], [data-e2e="search_top-item"], [data-e2e="search_video-item"], #captcha_container, #captcha-verify, [data-e2e="captcha-container"]',
+      { timeout: 20000 }
+    );
+  } catch {
+    // Selector timeout is non-fatal - pagination/interceptor may still
+    // have captured API responses; log state for diagnostics.
+    log.warning('Timed out waiting for search results/captcha selector; continuing anyway');
+  }
+
+  const { detectCaptcha } = await import('./antibot.js');
+  try {
+    if (await detectCaptcha(page)) {
+      const { CaptchaError: CaptchaErr } = await import('./intercept.js');
+      throw new CaptchaErr(10000, 'Captcha wall detected after navigation');
+    }
+  } catch (err) {
+    if (err?.name === 'CaptchaError') throw err;
+    // detectCaptcha itself failed (e.g. page closed) - ignore, continue
+  }
+
   log.info(`Results after initial load: ${results.length}`);
 
   // Scroll-based pagination: TikTok's own JS loads more pages as we scroll,
