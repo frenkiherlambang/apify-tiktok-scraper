@@ -7,7 +7,7 @@
  */
 
 import { Actor } from 'apify';
-import { PlaywrightCrawler, Configuration } from 'crawlee';
+import { PlaywrightCrawler, Configuration, ProxyConfiguration } from 'crawlee';
 import { readFileSync } from 'fs';
 import { normalizeCookies, validateCookies, getCookieHash, getTargetIdc } from './cookies.js';
 import { setupInterceptors, CaptchaError } from './intercept.js';
@@ -27,6 +27,37 @@ const logger = {
 const DEFAULT_MAX_ITEMS = 200;
 const DEFAULT_STALL_LIMIT = 5;
 const DEFAULT_SCROLL_DELAY = 2000;
+
+// Resource types dropped before they hit the wire. Media (video previews in
+// particular) dominates proxy traffic and every field we collect comes from
+// intercepted JSON responses, not from rendered assets. Set BLOCK_MEDIA=false
+// to disable while debugging anti-bot behaviour.
+const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font']);
+const BLOCK_MEDIA = process.env.BLOCK_MEDIA !== 'false';
+
+/**
+ * Split a proxy list into individual URLs. Accepts comma or newline separators
+ * so multiple sticky endpoints can be passed in one env var.
+ */
+function parseProxyUrls(raw) {
+  if (!raw) return [];
+  return raw
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Strip credentials from a proxy URL so it is safe to log.
+ */
+function redactProxyUrl(proxyUrl) {
+  try {
+    const { protocol, hostname, port } = new URL(proxyUrl);
+    return `${protocol}//${hostname}${port ? `:${port}` : ''}`;
+  } catch {
+    return '<unparseable proxy URL>';
+  }
+}
 
 /**
  * Parse and validate input
@@ -450,6 +481,11 @@ Actor.main(async () => {
     : [config.cookies];
   const sessionManager = new SessionManager(sessions, { maxRetriesPerSession: 3 });
 
+  const blockAssets = BLOCK_MEDIA && !config.downloadMedia;
+  if (blockAssets) {
+    log.info(`Blocking ${[...BLOCKED_RESOURCE_TYPES].join('/')} requests to cut proxy traffic`);
+  }
+
   // Create crawler
   const crawlerOptions = {
     maxRequestRetries: 3,
@@ -472,6 +508,16 @@ Actor.main(async () => {
     preNavigationHooks: [
       async (crawlingContext) => {
         const { page } = crawlingContext;
+
+        // Drop images/video/fonts before they consume proxy bandwidth
+        if (blockAssets) {
+          await page.route('**/*', (route) =>
+            BLOCKED_RESOURCE_TYPES.has(route.request().resourceType())
+              ? route.abort()
+              : route.continue()
+          );
+        }
+
         // Override navigator.webdriver to avoid detection
         await page.addInitScript(() => {
           Object.defineProperty(navigator, 'webdriver', {
@@ -526,17 +572,20 @@ Actor.main(async () => {
     },
   };
 
-  // No proxy by default. Set APIFY_PROXY_URL or PROXY_URL to route through one.
-  const customProxyUrl = process.env.APIFY_PROXY_URL || process.env.PROXY_URL;
-  if (customProxyUrl) {
-    log.info(`Using custom proxy: ${customProxyUrl}`);
-    crawlerOptions.proxyConfiguration = {
-      proxyUrls: [customProxyUrl],
-    };
-    // Also set on launch context for direct browser proxy
-    crawlerOptions.launchContext.launchOptions.proxy = {
-      server: customProxyUrl,
-    };
+  // No proxy by default. Set PROXY_URL (or CUSTOM_PROXY_URL) to route through one.
+  // A comma/newline-separated list is accepted; the cookie hash picks one entry
+  // deterministically so a given session always egresses from the same IP.
+  const proxyUrls = parseProxyUrls(
+    process.env.CUSTOM_PROXY_URL || process.env.PROXY_URL || process.env.APIFY_PROXY_URL
+  );
+  if (proxyUrls.length > 0) {
+    // BigInt keeps the 64-bit hash exact so the mapping is stable across runs
+    const proxyIndex = Number(BigInt(`0x${cookieHash}`) % BigInt(proxyUrls.length));
+    const proxyUrl = proxyUrls[proxyIndex];
+    log.info(`Using proxy ${redactProxyUrl(proxyUrl)} (${proxyUrls.length} configured)`);
+    crawlerOptions.proxyConfiguration = new ProxyConfiguration({
+      proxyUrls: [proxyUrl],
+    });
   }
 
   const crawler = new PlaywrightCrawler(crawlerOptions, Configuration.getGlobalConfig());
