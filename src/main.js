@@ -439,7 +439,7 @@ Actor.main(async () => {
   const config = await parseInput(input);
   log.info(`Mode: ${config.mode}, Queries: ${config.queries.join(', ')}, Max Items: ${config.maxItems}`);
 
-  // Calculate session ID for proxy pinning
+  // Log session identity for debugging
   const cookieHash = getCookieHash(config.cookies);
   const targetIdc = getTargetIdc(config.cookies);
   log.info(`Session hash: ${cookieHash}, Target IDC: ${targetIdc || 'auto'}`);
@@ -526,42 +526,17 @@ Actor.main(async () => {
     },
   };
 
-  // Add proxy configuration only if on Apify platform (has proxy support)
-  // For local dev, you need APIFY_PROXY_PASSWORD or APIFY_TOKEN env var
-  // Or use a custom residential proxy
-  if (Actor.apifyClient) {
-    crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
-      groups: ['RESIDENTIAL'],
-      countryCode: targetIdc === 'alisg' ? 'SG' : (targetIdc === 'useast2a' ? 'US' : undefined),
-    });
-  } else {
-    // Local development - try to use Apify Proxy if available
-    try {
-      crawlerOptions.proxyConfiguration = await Actor.createProxyConfiguration({
-        groups: ['RESIDENTIAL'],
-      });
-    } catch {
-      // Try custom proxy URL from environment
-      const customProxyUrl = process.env.APIFY_PROXY_URL || process.env.PROXY_URL;
-      if (customProxyUrl) {
-        log.info(`Using custom proxy: ${customProxyUrl}`);
-        // Parse proxy URL to extract components
-        const url = new URL(customProxyUrl);
-        crawlerOptions.proxyConfiguration = {
-          proxyUrls: [customProxyUrl],
-        };
-        // Also set on launch context for direct browser proxy
-        crawlerOptions.launchContext.launchOptions.proxy = {
-          server: customProxyUrl,
-        };
-      } else {
-        log.warning('No proxy configured. TikTok may block datacenter IPs.');
-        log.warning('Set APIFY_PROXY_PASSWORD or APIFY_TOKEN env var to use Apify Proxy locally.');
-        log.warning('Or set APIFY_PROXY_URL for a custom proxy.');
-        log.warning('Or run on Apify Platform for built-in residential proxy support.');
-        log.warning('Without a residential proxy, TikTok will show a verification challenge.');
-      }
-    }
+  // No proxy by default. Set APIFY_PROXY_URL or PROXY_URL to route through one.
+  const customProxyUrl = process.env.APIFY_PROXY_URL || process.env.PROXY_URL;
+  if (customProxyUrl) {
+    log.info(`Using custom proxy: ${customProxyUrl}`);
+    crawlerOptions.proxyConfiguration = {
+      proxyUrls: [customProxyUrl],
+    };
+    // Also set on launch context for direct browser proxy
+    crawlerOptions.launchContext.launchOptions.proxy = {
+      server: customProxyUrl,
+    };
   }
 
   const crawler = new PlaywrightCrawler(crawlerOptions, Configuration.getGlobalConfig());
