@@ -29,6 +29,7 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 | `commentsPerPost` | integer | `20` | Max comments per video |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
 | `outputSchema` | string | `compat` | Output format: `compat`, `native`, or `both` |
+| `proxyConfiguration` | object | `{"useApifyProxy": false}` | Apify Proxy or custom external proxy configuration |
 
 ### Cookie Format
 
@@ -60,6 +61,27 @@ At minimum, these cookies must be present:
 
 Additional cookies that improve results:
 - `ttwid`, `msToken`, `tt-target-idc`, `uid_tt`
+
+### Proxy Configuration
+
+Proxies can be configured in two ways:
+
+1. **Via Actor Input (`proxyConfiguration`)**:
+   - In Apify UI, configure under the **Proxy** section (select Apify Residential/Datacenter proxy or provide custom external proxy URLs).
+   - In JSON input:
+     ```json
+     "proxyConfiguration": {
+       "useApifyProxy": false,
+       "proxyUrls": ["http://username:password@proxy-host.com:8000"]
+     }
+     ```
+
+2. **Via Environment Variables**:
+   - Set `CUSTOM_PROXY_URL`, `PROXY_URL`, or `APIFY_PROXY_URL` in Actor Settings or local `.env`:
+     ```bash
+     CUSTOM_PROXY_URL="http://username:password@proxy-host.com:8000"
+     ```
+   - Multiple proxy endpoints can be comma-separated or newline-separated. When multiple proxies are passed, the scraper deterministically pins each session to a proxy using the cookie hash.
 
 ## Output Schema
 

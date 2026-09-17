@@ -10,5 +10,8 @@
   "includeComments": false,
   "commentsPerPost": 20,
   "downloadMedia": false,
-  "outputSchema": "compat"
+  "outputSchema": "compat",
+  "proxyConfiguration": {
+    "useApifyProxy": false
+  }
 }

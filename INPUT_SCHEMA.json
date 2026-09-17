@@ -129,6 +129,15 @@
       "description": "'compat' matches the Threads-style schema, 'native' is full TikTok data, 'both' includes all fields.",
       "default": "compat",
       "editor": "select"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy configuration for the actor. You can enable Apify Proxy (Residential recommended) or provide custom external proxy URLs.",
+      "default": {
+        "useApifyProxy": false
+      },
+      "editor": "proxy"
     }
   }
 }

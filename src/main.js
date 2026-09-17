@@ -124,6 +124,7 @@ async function parseInput(input) {
     commentsPerPost,
     downloadMedia,
     outputSchema,
+    proxyConfiguration: input.proxyConfiguration,
   };
 }
 
@@ -572,20 +573,34 @@ Actor.main(async () => {
     },
   };
 
-  // No proxy by default. Set PROXY_URL (or CUSTOM_PROXY_URL) to route through one.
-  // A comma/newline-separated list is accepted; the cookie hash picks one entry
-  // deterministically so a given session always egresses from the same IP.
-  const proxyUrls = parseProxyUrls(
-    process.env.CUSTOM_PROXY_URL || process.env.PROXY_URL || process.env.APIFY_PROXY_URL
-  );
-  if (proxyUrls.length > 0) {
-    // BigInt keeps the 64-bit hash exact so the mapping is stable across runs
-    const proxyIndex = Number(BigInt(`0x${cookieHash}`) % BigInt(proxyUrls.length));
-    const proxyUrl = proxyUrls[proxyIndex];
-    log.info(`Using proxy ${redactProxyUrl(proxyUrl)} (${proxyUrls.length} configured)`);
-    crawlerOptions.proxyConfiguration = new ProxyConfiguration({
-      proxyUrls: [proxyUrl],
-    });
+  // Proxy configuration:
+  // 1. Check actor input proxyConfiguration (Apify Proxy or custom proxy URLs set in UI)
+  // 2. Fallback to environment variables (CUSTOM_PROXY_URL, PROXY_URL, APIFY_PROXY_URL)
+  if (config.proxyConfiguration) {
+    try {
+      const proxyConfig = await Actor.createProxyConfiguration(config.proxyConfiguration);
+      if (proxyConfig) {
+        crawlerOptions.proxyConfiguration = proxyConfig;
+        log.info('Using proxy configuration from actor input');
+      }
+    } catch (error) {
+      log.warning(`Failed to initialize proxy from input: ${error.message}`);
+    }
+  }
+
+  if (!crawlerOptions.proxyConfiguration) {
+    const proxyUrls = parseProxyUrls(
+      process.env.CUSTOM_PROXY_URL || process.env.PROXY_URL || process.env.APIFY_PROXY_URL
+    );
+    if (proxyUrls.length > 0) {
+      // BigInt keeps the 64-bit hash exact so the mapping is stable across runs
+      const proxyIndex = Number(BigInt(`0x${cookieHash}`) % BigInt(proxyUrls.length));
+      const proxyUrl = proxyUrls[proxyIndex];
+      log.info(`Using proxy ${redactProxyUrl(proxyUrl)} from environment (${proxyUrls.length} configured)`);
+      crawlerOptions.proxyConfiguration = new ProxyConfiguration({
+        proxyUrls: [proxyUrl],
+      });
+    }
   }
 
   const crawler = new PlaywrightCrawler(crawlerOptions, Configuration.getGlobalConfig());
