@@ -492,8 +492,10 @@ Actor.main(async () => {
     maxRequestRetries: 3,
     requestHandlerTimeoutSecs: 300,
     launchContext: {
+      ignoreProxyCertificate: true,
       launchOptions: {
         headless: true,
+        ignoreHTTPSErrors: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -502,13 +504,27 @@ Actor.main(async () => {
           '--disable-accelerated-2d-canvas',
           '--disable-gpu',
           '--window-size=1920,1080',
+          '--ignore-certificate-errors',
+          '--ignore-certificate-errors-spki-list',
+          '--allow-running-insecure-content',
           `--lang=${toChromiumLang(config.language)}`,
         ],
       },
     },
     preNavigationHooks: [
-      async (crawlingContext) => {
+      async (crawlingContext, gotoOptions) => {
         const { page } = crawlingContext;
+
+        if (gotoOptions) {
+          gotoOptions.waitUntil = 'domcontentloaded';
+          gotoOptions.timeout = 30000;
+        }
+
+        // Inject cookies prior to navigation so initial request carries session identity
+        const currentSession = sessionManager.getCurrent();
+        if (currentSession && currentSession.length > 0) {
+          await page.context().addCookies(currentSession);
+        }
 
         // Drop images/video/fonts before they consume proxy bandwidth
         if (blockAssets) {
