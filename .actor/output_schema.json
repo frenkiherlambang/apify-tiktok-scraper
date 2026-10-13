@@ -1,12 +1,12 @@
 {
   "actorOutputSchemaVersion": 1,
   "title": "Output schema of TikTok Scraper",
-  "description": "TikTok Scraper stores scraped posts in the default dataset. Each item contains post ID, caption text, author info, engagement stats (likes, views, replies, reposts), and media URLs. Run metadata (scrape timestamp, queries, mode, total item count) is stored as a JSON record in the default key-value store.",
+  "description": "TikTok Scraper stores scraped posts in the default dataset. Each item contains post ID, caption text, author info, engagement stats (likes, views, replies, reposts, saves), and media URLs. Run metadata (scrape timestamp, queries, mode, total item count) is stored as a JSON record in the default key-value store.",
   "properties": {
     "results": {
       "type": "string",
       "title": "Scraped posts",
-      "description": "All posts scraped for the given queries. Each dataset item is a single TikTok post with post_id, shortcode, post_url, text, timestamp, user (id, username, full_name, profile_url, is_verified, follower_count), likes, replies, reposts, quotes, reshares, views, images, videos, is_reply, and source. When includeComments is enabled, items may also include a comments array.",
+      "description": "All posts scraped for the given queries. Each dataset item is a single TikTok post with post_id, shortcode, post_url, text, timestamp, user (id, username, full_name, profile_url, is_verified, follower_count), likes, replies, reposts, quotes, reshares, views, saves, bookmarks, images, videos, is_reply, and source. When includeComments is enabled, items may also include a comments array.",
       "template": "{{links.apiDefaultDatasetUrl}}/items"
     },
     "runMetadata": {

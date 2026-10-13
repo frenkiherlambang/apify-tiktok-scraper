@@ -109,6 +109,8 @@ Each item in the dataset includes:
   "quotes": null,
   "reshares": 3000,
   "views": 500000,
+  "saves": 4500,
+  "bookmarks": 4500,
   "images": [],
   "videos": [{"url": "https://v16-webapp.tiktok.com/...", "duration": 30}],
   "is_reply": false,
@@ -179,7 +181,7 @@ src/
 
 ## How It Works
 
-1. **Browser Launch**: Playwright launches a headless Chrome instance
+1. **Browser Launch**: Crawlee's `PlaywrightCrawler` launches Camoufox, a stealth-patched Firefox build that spoofs fingerprints at the browser level
 2. **Cookie Injection**: Session cookies are injected into the browser context
 3. **Resource Blocking**: Heavy resources (images, media, fonts) are blocked to reduce bandwidth
 4. **Navigation**: The page navigates to TikTok search/hashtag/profile URL

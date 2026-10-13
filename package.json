@@ -11,7 +11,9 @@
   "dependencies": {
     "apify": "^3.2.6",
     "crawlee": "^3.12.0",
-    "playwright": "^1.49.0"
+    "playwright": "1.59.0",
+    "playwright-core": "1.59.0",
+    "camoufox-js": "0.12.0"
   },
   "devDependencies": {
     "@apify/eslint-config": "^0.3.0"

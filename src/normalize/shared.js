@@ -37,10 +37,11 @@ export function normalizeVideoItem(item) {
   const shareCount = parseInt(stats.shareCount || statsDig(stats, 'shareCount'), 10) || 0;
   const playCount = parseInt(stats.playCount || statsDig(stats, 'playCount'), 10) || 0;
   const repostCount = parseInt(stats.repostCount || statsDig(stats, 'repostCount'), 10) || 0;
+  const collectCount = parseInt(stats.collectCount || stats.collect_count || statsDig(stats, 'collectCount'), 10) || 0;
 
   // Calculate engagement rate
   const engagementRate = playCount > 0
-    ? ((diggCount + commentCount + shareCount + repostCount) / playCount * 100).toFixed(2)
+    ? ((diggCount + commentCount + shareCount + repostCount + collectCount) / playCount * 100).toFixed(2)
     : null;
 
   return {
@@ -66,6 +67,9 @@ export function normalizeVideoItem(item) {
     quotes: null,
     reshares: shareCount,
     views: playCount,
+    saves: collectCount,
+    bookmarks: collectCount,
+    collect_count: collectCount,
     images: item.imagePost?.images?.map((img) => img.imageURL?.urlList?.[0] || img.url) || [],
     videos: video.playAddr
       ? [{ url: video.playAddr, duration: video.duration || null }]

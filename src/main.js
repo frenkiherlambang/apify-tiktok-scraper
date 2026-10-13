@@ -8,6 +8,8 @@
 
 import { Actor } from 'apify';
 import { PlaywrightCrawler, Configuration, ProxyConfiguration } from 'crawlee';
+import { firefox } from 'playwright-core';
+import { launchOptions as camoufoxLaunchOptions } from 'camoufox-js';
 import { readFileSync } from 'fs';
 import { normalizeCookies, validateCookies, getCookieHash, getTargetIdc } from './cookies.js';
 import { setupInterceptors, CaptchaError } from './intercept.js';
@@ -165,24 +167,24 @@ function buildUrl(mode, query, sortBy, publishedWithin, language = 'id') {
 }
 
 /**
- * Map an ISO language code to a Chromium --lang value.
+ * Map an ISO language code to a BCP 47 locale tag.
  * The browser locale drives TikTok's search API language params
  * (e.g. language/app_language on /api/search/*), so it must match
  * the lang param we set on the search URL.
  */
-function toChromiumLang(code) {
+function toLocaleTag(code) {
   const map = {
-    id: 'id-ID,id;q=0.9',
-    en: 'en-US,en;q=0.9',
-    ms: 'ms-MY,ms;q=0.9',
-    th: 'th-TH,th;q=0.9',
-    vi: 'vi-VN,vi;q=0.9',
-    ja: 'ja-JP,ja;q=0.9',
-    ko: 'ko-KR,ko;q=0.9',
-    es: 'es-ES,es;q=0.9',
-    pt: 'pt-BR,pt;q=0.9',
+    id: 'id-ID',
+    en: 'en-US',
+    ms: 'ms-MY',
+    th: 'th-TH',
+    vi: 'vi-VN',
+    ja: 'ja-JP',
+    ko: 'ko-KR',
+    es: 'es-ES',
+    pt: 'pt-BR',
   };
-  return map[code] || 'en-US,en;q=0.9';
+  return map[code] || 'en-US';
 }
 
 /**
@@ -264,6 +266,8 @@ function filterByOutputSchema(item, schema) {
     quotes: item.quotes,
     reshares: item.reshares,
     views: item.views,
+    saves: item.saves,
+    bookmarks: item.bookmarks,
     images: item.images,
     videos: item.videos,
     is_reply: item.is_reply,
@@ -491,24 +495,40 @@ Actor.main(async () => {
   const crawlerOptions = {
     maxRequestRetries: 3,
     requestHandlerTimeoutSecs: 300,
+    browserPoolOptions: {
+      // Camoufox spoofs fingerprints at the browser level — Crawlee must not
+      // layer its own generated fingerprint (UA/screen/viewport) on top of it.
+      useFingerprints: false,
+      // Playwright's default 1280x720 viewport fights Camoufox's spoofed
+      // window dimensions (the page would report the emulated viewport, and a
+      // second page on the same browser can hang). Null the viewport so
+      // Firefox measures the real window, and keep one page per browser.
+      maxOpenPagesPerBrowser: 1,
+      prePageCreateHooks: [
+        async (_pageId, _browserController, pageOptions = {}) => {
+          pageOptions.viewport = null;
+        },
+      ],
+    },
     launchContext: {
+      // Camoufox is a stealth-patched Firefox driven through the Playwright
+      // Firefox protocol, so it drops in as a replacement launcher. All
+      // fingerprint/stealth handling happens at the C++ level inside the
+      // browser — no Chromium stealth args or JS init-script overrides needed.
+      launcher: firefox,
+      // Incognito pages are required so Crawlee passes pageOptions through to
+      // newPage() (needed to disable the default viewport below) and gives
+      // each page a fresh context so sessions don't leak between cookies.
+      useIncognitoPages: true,
       ignoreProxyCertificate: true,
       launchOptions: {
-        headless: true,
+        ...(await camoufoxLaunchOptions({
+          headless: true,
+          locale: toLocaleTag(config.language),
+          block_webrtc: true,
+          // humanize: true, // enable to humanize cursor movement
+        })),
         ignoreHTTPSErrors: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu',
-          '--window-size=1920,1080',
-          '--ignore-certificate-errors',
-          '--ignore-certificate-errors-spki-list',
-          '--allow-running-insecure-content',
-          `--lang=${toChromiumLang(config.language)}`,
-        ],
       },
     },
     preNavigationHooks: [
@@ -526,7 +546,10 @@ Actor.main(async () => {
           await page.context().addCookies(currentSession);
         }
 
-        // Drop images/video/fonts before they consume proxy bandwidth
+        // Drop images/video/fonts before they consume proxy bandwidth.
+        // NOTE: no addInitScript stealth overrides here — Camoufox spoofs
+        // navigator.webdriver, chrome detection, etc. natively, and JS-level
+        // overrides on top of it would only add a detectable inconsistency.
         if (blockAssets) {
           await page.route('**/*', (route) =>
             BLOCKED_RESOURCE_TYPES.has(route.request().resourceType())
@@ -534,21 +557,6 @@ Actor.main(async () => {
               : route.continue()
           );
         }
-
-        // Override navigator.webdriver to avoid detection
-        await page.addInitScript(() => {
-          Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined,
-          });
-          // Override chrome detection
-          window.chrome = { runtime: {} };
-          // Override permissions
-          const originalQuery = window.navigator.permissions.query;
-          window.navigator.permissions.query = (parameters) =>
-            parameters.name === 'notifications'
-              ? Promise.resolve({ state: Notification.permission })
-              : originalQuery(parameters);
-        });
       },
     ],
     async requestHandler({ page, request }) {

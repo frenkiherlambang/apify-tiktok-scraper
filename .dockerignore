@@ -1,5 +1,5 @@
 # See https://docs.apify.com/academy/node/docker/Dockerfile
-# apify/actor-node-playwright-chrome is the base image for Apify actors that use Playwright
+# Base image: apify/actor-node-playwright-camoufox (Camoufox, Firefox-based)
 
 # When finished, remove any intermediate build artifacts
 node_modules
