@@ -2,8 +2,8 @@
  * comments.js — Dedicated TikTok video page, comment, and nested reply scraper
  *
  * Uses network interception on /api/comment/list/, /api/comment/list/reply/, and
- * /api/item/detail/ paired with comment-container scrolling and UI click expansion
- * so TikTok's own JS signs every paginated request.
+ * /api/item/detail/ paired with comment-drawer opening, container scrolling, and
+ * UI click expansion so TikTok's own JS signs every paginated request.
  */
 
 import { setupInterceptors, ENDPOINTS, CaptchaError, RateLimitError } from './intercept.js';
@@ -16,6 +16,15 @@ const COMMENT_OPEN_SELECTORS = [
   '[data-e2e="browse-comment-icon"]',
   '[data-e2e="search-comment-tab"]',
 ];
+
+const VIDEO_HYDRATION_SELECTOR = [
+  '[data-e2e="comment-icon"]',
+  '[data-e2e="browse-comment-icon"]',
+  '[data-e2e="comment-level-1"]',
+  '#captcha_container',
+  '#captcha-verify',
+  '[data-e2e="captcha-container"]',
+].join(', ');
 
 const MODAL_CLOSE_SELECTORS = [
   '[data-e2e="modal-close-inner-button"]',
@@ -178,6 +187,7 @@ async function waitUntil(page, predicate, timeoutMs, pollMs = 150) {
 async function scrollCommentsDown(page) {
   await page.evaluate(() => {
     const selectors = [
+      '[class*="DivCommentMain"]',
       '[data-e2e="comment-list"]',
       '[class*="DivCommentListContainer"]',
       '[class*="CommentListContainer"]',
@@ -238,36 +248,78 @@ async function dismissModals(page) {
 }
 
 /**
- * Try clicking the comment icon/tab if comments haven't loaded automatically.
+ * Click the comment drawer button on a TikTok video page if /api/comment/list/
+ * did not fire automatically on page load.
+ *
+ * TikTok renders direct video URLs in a full-screen feed layout with multiple
+ * [data-e2e="comment-icon"] nodes (current + next preloaded slide), so we scan
+ * all matching handles and click the first visible one (with a JS click fallback).
  */
-async function ensureCommentsOpen(page, getCount) {
-  if (getCount() > 0) return;
+async function ensureCommentsOpen(page, isLoaded, { openTimeoutMs = 8000, log } = {}) {
+  if (isLoaded()) return true;
 
   for (const selector of COMMENT_OPEN_SELECTORS) {
     try {
-      const el = await page.$(selector);
-      if (el && (await el.isVisible?.())) {
-        await el.click({ timeout: 2500 }).catch(() => {});
-        const loaded = await waitUntil(page, () => getCount() > 0, 2500);
-        if (loaded) return;
+      const handles = typeof page.$$ === 'function'
+        ? await page.$$(selector)
+        : (await page.$(selector) ? [await page.$(selector)] : []);
+
+      if (!handles || handles.length === 0) continue;
+
+      let clicked = false;
+      for (const el of handles) {
+        if (!el) continue;
+        const visible = typeof el.isVisible === 'function' ? await el.isVisible().catch(() => false) : true;
+        if (!visible) continue;
+
+        try {
+          await el.click({ timeout: 3000 });
+          clicked = true;
+          break;
+        } catch {
+          // Try next visible handle or fall back to JS click below
+        }
+      }
+
+      if (!clicked) {
+        clicked = await page.evaluate((sel) => {
+          const nodes = Array.from(document.querySelectorAll(sel));
+          const target = nodes.find((n) => {
+            const r = n.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight;
+          }) || nodes[0];
+          if (!target) return false;
+          target.click();
+          return true;
+        }, selector).catch(() => false);
+      }
+
+      if (clicked) {
+        log?.info?.(`Clicked ${selector} to open comment drawer`);
+        const loaded = await waitUntil(page, isLoaded, openTimeoutMs);
+        if (loaded) return true;
       }
     } catch {
       // Try next selector
     }
   }
+
+  return isLoaded();
 }
 
 /**
  * Find the next visible "View replies" / "View more" button in the DOM and tag it
  * with a unique marker attribute so Playwright can click it as a trusted user event.
  *
- * Returns `{ markerId, commentText, isLoadMore }` or `null` if none are available.
+ * Returns `{ markerId, commentText, label, isLoadMore }` or `null` if none are available.
  */
 async function findNextReplyExpander(page, { allowedTexts, exhaustedTexts, nextMarkerId }) {
   return page.evaluate(
     ({ allowed, exhausted, markerId }) => {
       const HIDE_PATTERN = /^(hide|sembunyikan|tutup|collapse|ocultar|masquer|非表示|숨기기|ẩn)/i;
-      const VIEW_PATTERN = /(view\s+(\d+|more)|repl(y|ies)|lihat\s+(\d+|lainnya|balasan)|balasan|tampilkan|ver\s+(\d+|más)|respuesta|xem\s+(\d+|thêm)|trả\s+lời|ดู.*ตอบกลับ|返信|답글)/i;
+      // Match localized "View X replies" / "View more" / "Lihat X balasan" etc.
+      // Intentionally excludes bare "Reply"/"Jawab" compose buttons.
+      const VIEW_PATTERN = /(view\s+(\d+|more)|lihat\s+(\d+|lainnya|balasan)|tampilkan|ver\s+(\d+|más)|xem\s+(\d+|thêm)|ดู.*ตอบกลับ|返信を表示|답글\s*(\d+|더보기)|more\s+repl|balasan\s+lainnya)/i;
 
       const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim();
       const allowedSet = allowed ? new Set(allowed) : null;
@@ -301,7 +353,7 @@ async function findNextReplyExpander(page, { allowedTexts, exhaustedTexts, nextM
         ? []
         : Array.from(
           document.querySelectorAll(
-            '[class*="DivViewRepliesContainer"] p, [class*="DivViewRepliesContainer"] span, [class*="DivViewRepliesContainer"] button, [class*="ReplyAction"] button, [class*="PViewMoreText"]'
+            '[class*="DivViewRepliesContainer"] button, [class*="DivViewMoreRepliesWrapper"] button, [class*="DivReplyContainer"] button, [class*="DivViewRepliesContainer"] p, [class*="DivViewRepliesContainer"] span, [class*="ReplyAction"] button, [class*="PViewMoreText"]'
           )
         );
 
@@ -309,6 +361,9 @@ async function findNextReplyExpander(page, { allowedTexts, exhaustedTexts, nextM
 
       for (const el of candidates) {
         if (el.getAttribute('data-scraper-exhausted') === '1') continue;
+        // Never click the compose "Reply" / "Jawab" button
+        const e2e = el.getAttribute('data-e2e') || '';
+        if (e2e.startsWith('comment-reply')) continue;
         if (!isVisibleEl(el)) continue;
 
         const label = normalizeText(el.textContent);
@@ -333,7 +388,7 @@ async function findNextReplyExpander(page, { allowedTexts, exhaustedTexts, nextM
           markerId,
           commentText,
           label,
-          isLoadMore: el.getAttribute('data-e2e') === 'view-more-2',
+          isLoadMore: e2e === 'view-more-2' || /more|lainnya|más|thêm/i.test(label),
         };
       }
 
@@ -361,8 +416,9 @@ async function expandCommentReplies(page, state, options) {
   const {
     commentsPerPost,
     repliesPerComment,
-    replyClickDelay = 900,
-    replyResponseTimeout = 2500,
+    replyClickDelay = 1200,
+    replyResponseTimeout = 3500,
+    maxConsecutiveReplyErrors = 3,
     log,
   } = options;
 
@@ -407,6 +463,10 @@ async function expandCommentReplies(page, state, options) {
 
   while (totalClicks < maxTotalClicks) {
     if (state.fatalError) break;
+    if (state.consecutiveReplyErrors >= maxConsecutiveReplyErrors) {
+      log?.warning?.('Stopping reply expansion early after consecutive throttled/empty reply responses');
+      break;
+    }
     if (parentsNeedingReplies.every((c) => isParentSatisfied(c.comment_id))) break;
 
     const markerId = `rbtn-${totalClicks + 1}`;
@@ -436,7 +496,7 @@ async function expandCommentReplies(page, state, options) {
       }
 
       if (typeof btn.scrollIntoViewIfNeeded === 'function') {
-        await btn.scrollIntoViewIfNeeded().catch(() => {});
+        await btn.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
       }
       await btn.click({ timeout: 3000 }).catch(async () => {
         await page.evaluate((id) => {
@@ -451,7 +511,7 @@ async function expandCommentReplies(page, state, options) {
     totalClicks += 1;
     clicksByCommentText.set(textKey, priorClicks + 1);
 
-    // Wait for /api/comment/list/reply/ response to arrive
+    // Wait for /api/comment/list/reply/ response (or error) to arrive
     await waitUntil(
       page,
       () => state.replyResponseSeq > responseSeqBefore || Boolean(state.fatalError),
@@ -486,11 +546,13 @@ export async function scrapeVideoPage(page, videoUrl, options = {}) {
     commentsPerPost = 20,
     includeReplies = true,
     repliesPerComment = 10,
-    scrollDelay = 1500,
+    scrollDelay = 2000,
     stallLimit = 3,
-    replyClickDelay = 900,
-    replyResponseTimeout = 2500,
-    initialWaitMs = 2500,
+    replyClickDelay = 1200,
+    replyResponseTimeout = 3500,
+    initialWaitMs = 3000,
+    hydrationTimeoutMs = 15000,
+    openTimeoutMs = 8000,
     extractVideo = false,
     skipCaptchaCheck = false,
     log = console,
@@ -506,6 +568,7 @@ export async function scrapeVideoPage(page, videoUrl, options = {}) {
     commentListHasMore: true,
     commentResponseSeq: 0,
     replyResponseSeq: 0,
+    consecutiveReplyErrors: 0,
     interceptedVideo: null,
     fatalError: null,
   };
@@ -551,6 +614,7 @@ export async function scrapeVideoPage(page, videoUrl, options = {}) {
         state.commentListHasMore = Boolean(raw.hasMore);
       } else if (raw.endpoint === ENDPOINTS.COMMENT_REPLY_LIST) {
         state.replyResponseSeq += 1;
+        state.consecutiveReplyErrors = 0;
         try {
           const parentCid = new URL(raw.url).searchParams.get('comment_id');
           if (parentCid) {
@@ -565,6 +629,10 @@ export async function scrapeVideoPage(page, videoUrl, options = {}) {
       if (err instanceof CaptchaError || err instanceof RateLimitError) {
         state.fatalError = err;
       } else {
+        if (err.message?.includes(ENDPOINTS.COMMENT_REPLY_LIST)) {
+          state.replyResponseSeq += 1;
+          state.consecutiveReplyErrors += 1;
+        }
         log?.warning?.(`Comment interceptor error: ${err.message}`);
       }
     },
@@ -589,7 +657,18 @@ export async function scrapeVideoPage(page, videoUrl, options = {}) {
     }
     if (!navigated) throw lastGotoError;
 
-    // Wait for initial hydration / /api/comment/list/ response
+    // Wait for TikTok's SPA to hydrate (either comment button/items appear or /api/comment/list/ fires)
+    if (includeComments && typeof page.waitForSelector === 'function' && state.commentResponseSeq === 0) {
+      try {
+        await page.waitForSelector(VIDEO_HYDRATION_SELECTOR, {
+          state: 'attached',
+          timeout: hydrationTimeoutMs,
+        });
+      } catch {
+        log?.warning?.('Timed out waiting for video page hydration selector; continuing');
+      }
+    }
+
     await waitUntil(
       page,
       () => Boolean(state.fatalError) || (includeComments && state.commentResponseSeq > 0),
@@ -634,9 +713,22 @@ export async function scrapeVideoPage(page, videoUrl, options = {}) {
 
     let comments = [];
     if (includeComments) {
-      // If comments didn't auto-load on page entry, click the comment tab/icon
+      // TikTok's desktop video page keeps the comment drawer closed until clicked
       if (state.topComments.length === 0 && state.commentResponseSeq === 0) {
-        await ensureCommentsOpen(page, () => state.topComments.length);
+        const opened = await ensureCommentsOpen(
+          page,
+          () => state.commentResponseSeq > 0 || state.topComments.length > 0 || Boolean(state.fatalError),
+          { openTimeoutMs, log }
+        );
+        if (state.fatalError) throw state.fatalError;
+        if (!opened) {
+          log?.warning?.(`No /api/comment/list/ response captured after trying to open comments on ${videoUrl}`);
+        }
+      }
+
+      // Let the initial comment list render in the DOM before scrolling/expanding replies
+      if (state.topComments.length > 0 && typeof page.waitForSelector === 'function') {
+        await page.waitForSelector('[data-e2e="comment-level-1"]', { timeout: 5000 }).catch(() => {});
       }
 
       // Paginate top-level comments via scrolling

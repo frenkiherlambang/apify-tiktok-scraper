@@ -477,6 +477,64 @@ test('scrapeVideoPage paginates comments, expands nested replies, extracts locat
   assert.equal(page.listenerCount('response'), 0);
 });
 
+test('scrapeVideoPage clicks visible comment-icon when /api/comment/list/ does not auto-load', async () => {
+  const page = new EventEmitter();
+  let visibleClicked = false;
+
+  page.url = () => 'https://www.tiktok.com/@creator/video/7123456789012345678';
+  page.waitForTimeout = async () => {};
+  page.waitForSelector = async () => {};
+  page.goto = async () => {};
+  page.$ = async () => null;
+  page.evaluate = async () => undefined;
+  page.$$ = async (selector) => {
+    if (selector === '[data-e2e="comment-icon"]') {
+      return [
+        { isVisible: async () => false, click: async () => { throw new Error('hidden'); } },
+        {
+          isVisible: async () => true,
+          click: async () => {
+            visibleClicked = true;
+            page.emit(
+              'response',
+              makeResponse('https://www.tiktok.com/api/comment/list/?aweme_id=7123456789012345678&cursor=0', {
+                status_code: 0,
+                has_more: 0,
+                comments: [
+                  {
+                    cid: 'c10',
+                    aweme_id: '7123456789012345678',
+                    text: 'Loaded after drawer click',
+                    user: { uid: 'u10', unique_id: 'alice', nickname: 'Alice' },
+                  },
+                ],
+              })
+            );
+          },
+        },
+      ];
+    }
+    return [];
+  };
+
+  const result = await scrapeVideoPage(page, page.url(), {
+    extractVideo: false,
+    includeComments: true,
+    commentsPerPost: 5,
+    includeReplies: false,
+    initialWaitMs: 20,
+    openTimeoutMs: 100,
+    scrollDelay: 20,
+    skipCaptchaCheck: true,
+    log: { info: () => {}, warning: () => {} },
+  });
+
+  assert.equal(visibleClicked, true);
+  assert.equal(result.comments.length, 1);
+  assert.equal(result.comments[0].comment_id, 'c10');
+  assert.equal(page.listenerCount('response'), 0);
+});
+
 test('parseInput, buildUrl, and filterByOutputSchema support video mode and preserve location_created and comments in compat schema', async () => {
   const videoConfig = await parseInput({
     mode: 'video',

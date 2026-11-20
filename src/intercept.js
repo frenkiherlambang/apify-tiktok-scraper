@@ -82,7 +82,10 @@ export function setupInterceptors(page, options = {}) {
     if (!matchedEndpoint) return;
 
     // Only process successful responses
-    if (res.status() !== 200) return;
+    if (res.status() !== 200) {
+      onError(new Error(`HTTP ${res.status()} on ${matchedEndpoint}`));
+      return;
+    }
 
     try {
       const json = await res.json();
@@ -98,7 +101,7 @@ export function setupInterceptors(page, options = {}) {
           return;
         }
         // Other status codes - log and continue
-        onError(new Error(`API error: ${json.status_code}`));
+        onError(new Error(`API error ${json.status_code} on ${matchedEndpoint}`));
         return;
       }
 
@@ -120,8 +123,11 @@ export function setupInterceptors(page, options = {}) {
         hasMore: Boolean(json.hasMore ?? json.has_more ?? false),
         cursor: json.cursor ?? json.minCursor ?? null,
       });
-    } catch {
-      // Non-JSON response or parse error - skip silently
+    } catch (e) {
+      // TikTok often returns HTTP 200 with an empty body when bot-flagged or unsigned
+      if (e?.name === 'SyntaxError') {
+        onError(new Error(`Empty or non-JSON response on ${matchedEndpoint}`));
+      }
     }
   };
 
