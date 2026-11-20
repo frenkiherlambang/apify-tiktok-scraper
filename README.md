@@ -6,7 +6,8 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 
 - **Network Interception**: Captures responses from TikTok's API endpoints without parsing HTML
 - **Session Cookie Support**: Accepts cookies in multiple formats (raw header, JSON array, Netscape cookies.txt)
-- **Multiple Modes**: Search, hashtag, and profile scraping
+- **Multiple Modes**: Search, hashtag, profile, and direct video URL scraping
+- **Comments & Nested Replies**: Scrapes top-level comments (`/api/comment/list/`) and expands nested replies (`/api/comment/list/reply/`) into `video.comments -> comment.reply_comments`
 - **Efficient Resource Usage**: Blocks heavy resources (images, media, fonts) while keeping CSS for proper scroll behavior
 - **Anti-Bot Handling**: Captcha detection, exponential backoff, and session rotation
 - **Deduplication**: Automatic deduplication by item ID
@@ -16,8 +17,8 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | string | `search` | Scraping mode: `search`, `hashtag`, or `profile` |
-| `queries` | array | `[]` | List of search queries, hashtags (#), or usernames (@) |
+| `mode` | string | `search` | Scraping mode: `search`, `hashtag`, `profile`, or `video` |
+| `queries` | array | `[]` | List of search queries, hashtags (#), usernames (@), or video URLs/IDs (`video` mode) |
 | `maxItems` | integer | `200` | Maximum items per query |
 | `sessionCookies` | string | `""` | Session cookies (raw header, JSON, or cookies.txt) |
 | `cookiePool` | array | `[]` | Multiple cookie sets for rotation |
@@ -25,10 +26,14 @@ An Apify actor that scrapes TikTok data using session cookies and network interc
 | `publishedWithin` | string | `all` | Server-side time filter: `all`, `1d`, `7d`, `30d`, `90d`, `180d` |
 | `dateFrom` | string | `""` | Keep posts published on/after this date (`YYYY-MM-DD` or ISO datetime). Client-side, all modes |
 | `dateTo` | string | `""` | Keep posts published on/before this date (inclusive). Client-side, all modes |
-| `includeComments` | boolean | `false` | Whether to scrape comments |
-| `commentsPerPost` | integer | `20` | Max comments per video |
+| `language` | string | `id` | ISO language code (`id`, `en`, `ms`, `th`, `vi`, `ja`, `ko`, `es`, `pt`) |
+| `includeComments` | boolean | `false` (`true` in `video` mode if omitted) | Whether to scrape comments for each video |
+| `commentsPerPost` | integer | `20` | Max top-level comments per video (1–1000) |
+| `includeReplies` | boolean | `true` | Expand and scrape nested replies under each comment when `includeComments` is enabled |
+| `repliesPerComment` | integer | `10` | Max nested replies per top-level comment (1–200) |
+| `maxVideosForComments` | integer | `10` | Max videos per feed query to scrape comments for (`0` = all scraped videos) |
 | `downloadMedia` | boolean | `false` | Download media to KV store |
-| `outputSchema` | string | `compat` | Output format: `compat`, `native`, or `both` |
+| `outputSchema` | string | `compat` | Output format: `compat`, `native`, or `both` (comments and `location_created` are preserved in all schemas) |
 | `proxyConfiguration` | object | `{"useApifyProxy": false}` | Apify Proxy or custom external proxy configuration |
 
 ### Cookie Format
@@ -115,15 +120,40 @@ Each item in the dataset includes:
   "videos": [{"url": "https://v16-webapp.tiktok.com/...", "duration": 30}],
   "is_reply": false,
   "source": "api",
-  "hashtags": [{"id": "123", "name": "fyp"}],
-  "mentions": [],
-  "music": {"id": "123", "title": "Original Sound", "author": "Creator", "is_original": true},
-  "video_duration": 30,
-  "video_width": 1080,
-  "video_height": 1920,
-  "is_ad": false,
-  "region": "US",
-  "engagement_rate": 10.5
+  "location_created": "ID",
+  "comments": [
+    {
+      "comment_id": "7345678901234567890",
+      "post_id": "7345678901234567890",
+      "text": "Great video!",
+      "timestamp": "2024-01-15T11:00:00.000Z",
+      "user": {
+        "user_id": "999",
+        "username": "commenter",
+        "full_name": "Commenter"
+      },
+      "likes": 42,
+      "replies": 2,
+      "sub_comment_count": 2,
+      "is_reply": false,
+      "aweme_id": "7123456789012345678",
+      "reply_id": null,
+      "reply_comments": [
+        {
+          "comment_id": "7345678901234567891",
+          "post_id": "7345678901234567891",
+          "text": "Agreed!",
+          "timestamp": "2024-01-15T11:05:00.000Z",
+          "likes": 5,
+          "is_reply": true,
+          "aweme_id": "7123456789012345678",
+          "reply_id": "7345678901234567890",
+          "reply_to_reply_id": null,
+          "reply_to_username": "commenter"
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -133,12 +163,15 @@ Each item in the dataset includes:
 
 1. Create a new actor on [Apify Console](https://console.apify.com)
 2. Set the build to use the Dockerfile
-3. Configure input:
+3. Configure input (search or direct video comments):
    ```json
    {
-     "mode": "search",
-     "queries": ["SamsungGalaxyS25Ultra"],
-     "maxItems": 100,
+     "mode": "video",
+     "queries": ["https://www.tiktok.com/@username/video/7123456789012345678"],
+     "includeComments": true,
+     "commentsPerPost": 50,
+     "includeReplies": true,
+     "repliesPerComment": 10,
      "sessionCookies": "sessionid=...; sessionid_ss=...; sid_tt=...; sid_guard=..."
    }
    ```
@@ -149,8 +182,11 @@ Each item in the dataset includes:
 # Install dependencies
 npm install
 
-# Run with input
-npm start -- --input '{"queries":["fyp"],"sessionCookies":"..."}'
+# Run unit tests
+npm test
+
+# Run actor
+npm start
 ```
 
 ### With Apify CLI
@@ -170,13 +206,14 @@ src/
   main.js              # Actor entry point, input validation, crawler setup
   cookies.js           # Cookie parsing/normalization/validation
   intercept.js         # Network response interception + endpoint routing
-  paginate.js          # Scroll-based pagination with stall detection
+  paginate.js          # Scroll-based feed pagination with stall detection
+  comments.js          # Video page metadata, comment pagination, and reply expansion
   antibot.js           # Captcha detection, backoff, session rotation
   normalize/
     shared.js          # Shared video item normalization
     searchItem.js      # Search endpoint normalizers
     challengeItem.js   # Hashtag/challenge normalizer
-    comment.js         # Comment normalizer
+    comment.js         # Comment and nested reply normalizer + tree builder
 ```
 
 ## How It Works
@@ -184,9 +221,9 @@ src/
 1. **Browser Launch**: Crawlee's `PlaywrightCrawler` launches Camoufox, a stealth-patched Firefox build that spoofs fingerprints at the browser level
 2. **Cookie Injection**: Session cookies are injected into the browser context
 3. **Resource Blocking**: Heavy resources (images, media, fonts) are blocked to reduce bandwidth
-4. **Navigation**: The page navigates to TikTok search/hashtag/profile URL
+4. **Navigation**: The page navigates to TikTok search, hashtag, profile, or video URL
 5. **Network Interception**: Responses from TikTok API endpoints are intercepted
-6. **Scroll Pagination**: The page scrolls to trigger infinite scroll, loading more results
+6. **Scroll Pagination & Reply Expansion**: Scrolls feeds/comment panels and clicks "View replies" buttons so TikTok's signed API requests load comments and nested replies
 7. **Normalization**: Raw API responses are normalized to the output schema
 8. **Dataset Output**: Items are pushed to the Apify dataset
 
@@ -202,7 +239,7 @@ src/
 - Resource blocking reduces bandwidth by ~90%
 - Network interception avoids DOM parsing overhead
 - Session rotation distributes load across multiple accounts
-- Configurable max items and pagination limits
+- Configurable max items, video comment caps, and pagination limits
 
 ## License
 

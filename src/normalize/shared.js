@@ -44,6 +44,19 @@ export function normalizeVideoItem(item) {
     ? ((diggCount + commentCount + shareCount + repostCount + collectCount) / playCount * 100).toFixed(2)
     : null;
 
+  const rawLocationCreated = item.locationCreated
+    ?? item.location_created
+    ?? item.regionCode
+    ?? item.region
+    ?? null;
+  const locationCreated = typeof rawLocationCreated === 'string'
+    ? (rawLocationCreated.trim() || null)
+    : null;
+
+  const region = (typeof item.regionCode === 'string' && item.regionCode.trim())
+    || (typeof item.region === 'string' && item.region.trim())
+    || locationCreated;
+
   return {
     post_id: item.id,
     shortcode: item.id,
@@ -90,7 +103,8 @@ export function normalizeVideoItem(item) {
     video_width: video.width || null,
     video_height: video.height || null,
     is_ad: item.isAd || false,
-    region: item.regionCode || item.region || null,
+    location_created: locationCreated,
+    region,
     engagement_rate: engagementRate ? parseFloat(engagementRate) : null,
   };
 }

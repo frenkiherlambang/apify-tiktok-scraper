@@ -7,7 +7,8 @@
 
 import { normalizeSearchItem, normalizeSearchGeneral } from './normalize/searchItem.js';
 import { normalizeChallengeItem } from './normalize/challengeItem.js';
-import { normalizeCommentList } from './normalize/comment.js';
+import { normalizeCommentList, normalizeCommentReplyList } from './normalize/comment.js';
+import { normalizeVideoItem } from './normalize/shared.js';
 
 // API endpoint path matchers
 export const ENDPOINTS = {
@@ -15,7 +16,9 @@ export const ENDPOINTS = {
   SEARCH_ITEM: '/api/search/item/full/',
   CHALLENGE_ITEM: '/api/challenge/item_list/',
   POST_ITEM_LIST: '/api/post/item_list/',
+  COMMENT_REPLY_LIST: '/api/comment/list/reply/',
   COMMENT_LIST: '/api/comment/list/',
+  ITEM_DETAIL: '/api/item/detail/',
   USER_DETAIL: '/api/user/detail/',
 };
 
@@ -43,7 +46,19 @@ export class RateLimitError extends Error {
 }
 
 /**
- * Register response interception handlers on a Playwright page
+ * Extract a query param safely from a URL string.
+ */
+function getQueryParam(url, param) {
+  try {
+    return new URL(url).searchParams.get(param);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Register response interception handlers on a Playwright page.
+ * Returns a `cleanup()` function to detach the listener when done.
  */
 export function setupInterceptors(page, options = {}) {
   const {
@@ -55,12 +70,15 @@ export function setupInterceptors(page, options = {}) {
   } = options;
 
   const seenIds = dedupSet || new Set();
+  // Match longest/most-specific path first so `/api/comment/list/reply/`
+  // is never swallowed by `/api/comment/list/`.
+  const sortedEndpoints = [...endpoints].sort((a, b) => b.length - a.length);
 
-  page.on('response', async (res) => {
+  const handler = async (res) => {
     const url = res.url();
 
     // Check if this response matches any endpoint we care about
-    const matchedEndpoint = endpoints.find((t) => url.includes(t));
+    const matchedEndpoint = sortedEndpoints.find((t) => url.includes(t));
     if (!matchedEndpoint) return;
 
     // Only process successful responses
@@ -72,10 +90,12 @@ export function setupInterceptors(page, options = {}) {
       // Check for error status codes
       if (json.status_code && json.status_code !== STATUS_CODES.OK) {
         if (json.status_code === STATUS_CODES.CAPTCHA) {
-          throw new CaptchaError(json.status_code);
+          onError(new CaptchaError(json.status_code));
+          return;
         }
         if (json.status_code === STATUS_CODES.RATE_LIMIT) {
-          throw new RateLimitError();
+          onError(new RateLimitError());
+          return;
         }
         // Other status codes - log and continue
         onError(new Error(`API error: ${json.status_code}`));
@@ -83,7 +103,7 @@ export function setupInterceptors(page, options = {}) {
       }
 
       // Route to appropriate normalizer
-      const normalized = normalizeResponse(json, matchedEndpoint, seenIds);
+      const normalized = normalizeResponse(json, matchedEndpoint, seenIds, url);
 
       if (normalized && normalized.length > 0) {
         for (const item of normalized) {
@@ -97,27 +117,33 @@ export function setupInterceptors(page, options = {}) {
         url,
         data: json,
         itemCount: normalized?.length || 0,
-        hasMore: json.hasMore ?? json.has_more ?? false,
+        hasMore: Boolean(json.hasMore ?? json.has_more ?? false),
         cursor: json.cursor ?? json.minCursor ?? null,
       });
-    } catch (e) {
-      if (e instanceof CaptchaError || e instanceof RateLimitError) {
-        throw e; // Re-throw for the caller to handle
-      }
+    } catch {
       // Non-JSON response or parse error - skip silently
     }
-  });
+  };
+
+  page.on('response', handler);
 
   return {
     ENDPOINTS,
     STATUS_CODES,
+    cleanup: () => {
+      if (typeof page.off === 'function') {
+        page.off('response', handler);
+      } else if (typeof page.removeListener === 'function') {
+        page.removeListener('response', handler);
+      }
+    },
   };
 }
 
 /**
  * Route a response to the correct normalizer based on endpoint
  */
-function normalizeResponse(data, endpoint, seenIds) {
+function normalizeResponse(data, endpoint, seenIds, url = '') {
   switch (endpoint) {
     case ENDPOINTS.SEARCH_GENERAL:
       return normalizeSearchGeneral(data, seenIds);
@@ -127,11 +153,17 @@ function normalizeResponse(data, endpoint, seenIds) {
       return normalizeChallengeItem(data, seenIds);
     case ENDPOINTS.POST_ITEM_LIST:
       return normalizeSearchItem(data, seenIds); // Same structure as search
+    case ENDPOINTS.COMMENT_REPLY_LIST:
+      return normalizeCommentReplyList(data, seenIds, getQueryParam(url, 'comment_id'));
     case ENDPOINTS.COMMENT_LIST:
       return normalizeCommentList(data, seenIds);
+    case ENDPOINTS.ITEM_DETAIL: {
+      const itemStruct = data?.itemInfo?.itemStruct;
+      if (!itemStruct) return [];
+      const normalized = normalizeVideoItem(itemStruct);
+      return normalized ? [{ ...normalized, _type: 'video_detail' }] : [];
+    }
     default:
       return [];
   }
 }
-
-

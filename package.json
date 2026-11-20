@@ -6,14 +6,14 @@
   "type": "module",
   "scripts": {
     "start": "node src/main.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "node --test"
   },
   "dependencies": {
-    "apify": "^3.2.6",
-    "crawlee": "^3.12.0",
+    "apify": "^3.8.0",
+    "camoufox-js": "0.12.0",
+    "crawlee": "^3.18.2",
     "playwright": "1.59.0",
-    "playwright-core": "1.59.0",
-    "camoufox-js": "0.12.0"
+    "playwright-core": "1.59.0"
   },
   "devDependencies": {
     "@apify/eslint-config": "^0.3.0"

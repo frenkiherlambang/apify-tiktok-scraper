@@ -90,6 +90,7 @@ export function normalizeUserCard(user) {
     videos: [],
     is_reply: false,
     source: 'api',
+    location_created: null,
     _type: 'user_card',
   };
 }

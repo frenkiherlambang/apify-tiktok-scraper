@@ -1,6 +1,6 @@
 {
   "title": "TikTok Scraper Actor",
-  "description": "Scrapes TikTok videos, profiles, and hashtags using session cookies. Uses network interception to capture data directly from TikTok's API without DOM parsing.",
+  "description": "Scrapes TikTok videos, profiles, hashtags, comments, and nested replies using session cookies. Uses network interception to capture data directly from TikTok's API without DOM parsing.",
   "type": "object",
   "schemaVersion": 1,
   "required": ["queries"],
@@ -8,18 +8,18 @@
     "mode": {
       "title": "Scraping Mode",
       "type": "string",
-      "enum": ["search", "hashtag", "profile"],
-      "description": "The type of scraping to perform. 'search' for keyword search, 'hashtag' for hashtag feeds, 'profile' for user profile feeds.",
+      "enum": ["search", "hashtag", "profile", "video"],
+      "description": "The type of scraping to perform. 'search' for keyword search, 'hashtag' for hashtag feeds, 'profile' for user profile feeds, or 'video' for direct TikTok video/photo URLs or IDs.",
       "default": "search",
       "editor": "select"
     },
     "queries": {
-      "title": "Search Queries",
+      "title": "Search Queries / Video URLs",
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "List of search queries, hashtags (with #), or usernames (with @) to scrape.",
+      "description": "List of search queries, hashtags (with #), usernames (with @), or TikTok video URLs/IDs (when mode is 'video').",
       "default": ["SamsungGalaxyS25Ultra"],
       "editor": "json"
     },
@@ -102,17 +102,42 @@
     "includeComments": {
       "title": "Include Comments",
       "type": "boolean",
-      "description": "Whether to scrape comments for each video.",
+      "description": "Whether to scrape top-level comments for each video. Defaults to true when mode is 'video' (if omitted) and false for feed modes.",
       "default": false,
       "editor": "checkbox"
     },
     "commentsPerPost": {
       "title": "Comments Per Post",
       "type": "integer",
-      "description": "Maximum number of comments to scrape per video.",
+      "description": "Maximum number of top-level comments to scrape per video.",
       "default": 20,
       "minimum": 1,
-      "maximum": 100,
+      "maximum": 1000,
+      "editor": "number"
+    },
+    "includeReplies": {
+      "title": "Include Comment Replies",
+      "type": "boolean",
+      "description": "When includeComments is enabled, expand and scrape nested replies under each comment (attached as comment.reply_comments).",
+      "default": true,
+      "editor": "checkbox"
+    },
+    "repliesPerComment": {
+      "title": "Replies Per Comment",
+      "type": "integer",
+      "description": "Maximum number of nested replies to scrape per top-level comment when includeReplies is enabled.",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 200,
+      "editor": "number"
+    },
+    "maxVideosForComments": {
+      "title": "Max Videos For Comments",
+      "type": "integer",
+      "description": "Maximum number of videos per query to scrape comments for in search/hashtag/profile modes. Set to 0 to scrape comments for all scraped videos.",
+      "default": 10,
+      "minimum": 0,
+      "maximum": 1000,
       "editor": "number"
     },
     "downloadMedia": {
@@ -126,7 +151,7 @@
       "title": "Output Schema",
       "type": "string",
       "enum": ["compat", "native", "both"],
-      "description": "'compat' matches the Threads-style schema, 'native' is full TikTok data, 'both' includes all fields.",
+      "description": "'compat' matches the Threads-style schema, 'native' is full TikTok data, 'both' includes all fields. Scraped comments and replies are preserved in all schemas.",
       "default": "compat",
       "editor": "select"
     },

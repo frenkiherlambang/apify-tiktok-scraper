@@ -9,6 +9,9 @@
   "dateTo": "",
   "includeComments": false,
   "commentsPerPost": 20,
+  "includeReplies": true,
+  "repliesPerComment": 10,
+  "maxVideosForComments": 10,
   "downloadMedia": false,
   "outputSchema": "compat",
   "proxyConfiguration": {
